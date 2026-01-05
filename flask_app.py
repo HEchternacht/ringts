@@ -8,7 +8,7 @@ from flask import Flask, render_template, jsonify, request, Response
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 import bs4
@@ -264,7 +264,7 @@ class Database:
 
 # Logging function
 def log_console(message, level="INFO"):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}] [{level}] {message}"
     print(log_entry)
     console_queue.put(log_entry)
@@ -310,17 +310,16 @@ def extract_tables(soup):
 
 def parse_datetime(date_str):
     """Parse datetime from Brazilian format"""
-    from datetime import timedelta
     import re
     if "Hoje" in date_str:
         time_part = re.search(r'(\d{2}:\d{2})', date_str)
         if time_part:
             time_str = time_part.group(1)
-            now = datetime.now()
+            now = datetime.now() - timedelta(hours=3)
             date_time = datetime.strptime(f"{now.date()} {time_str}", "%Y-%m-%d %H:%M")
             return pd.to_datetime(date_time)
         else:
-            yesterday = datetime.now() - timedelta(days=1)
+            yesterday = (datetime.now() - timedelta(hours=3)) - timedelta(days=1)
             return pd.to_datetime(datetime.strptime(f"{yesterday.date()} 00:00", "%Y-%m-%d %H:%M"))
     return None
 
@@ -448,7 +447,7 @@ def loop_get_rankings(database, world="Auroria", debug=False):
                     log_console("No new update found, sleeping 10s", "DEBUG")
                 with scraper_lock:
                     scraper_state = "sleeping"
-                time.sleep(10)
+                time.sleep(60)
             else:
                 log_console(f"New update detected: {last_update} -> {current_update}")
                 with scraper_lock:
@@ -467,7 +466,7 @@ def loop_get_rankings(database, world="Auroria", debug=False):
             log_console(f"Error in scraper: {str(e)}", "ERROR")
             with scraper_lock:
                 scraper_state = "sleeping"
-            time.sleep(30)  # Wait before retry
+            time.sleep(10)  # Wait before retry
 
 
 def start_scraper_thread(database):
@@ -786,7 +785,7 @@ def console_stream():
 def get_scraper_status():
     """Get scraper status"""
     global last_status_check
-    last_status_check = datetime.now()
+    last_status_check = datetime.now() - timedelta(hours=3)
     
     deltas = db.get_deltas()
     with scraper_lock:
