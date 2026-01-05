@@ -134,8 +134,6 @@ scraper_lock = threading.Lock()
 last_status_check = None
 
 
-root_path=
-
 
 class Database:
     """
