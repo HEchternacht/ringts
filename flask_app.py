@@ -504,7 +504,7 @@ def loop_get_rankings(database, world="Auroria", debug=False):
     scraper_running = True
     last_update = 'na'
     log_console(f"Starting ranking scraper for {world}")
-    runned_once=False
+    ignore_updates=[]
     while scraper_running:
         try:
             with scraper_lock:
@@ -512,7 +512,7 @@ def loop_get_rankings(database, world="Auroria", debug=False):
             
             current_update = return_last_update(world)
             
-            if last_update == current_update:
+            if last_update == current_update or current_update in ignore_updates:
                 if debug:
                     log_console("No new update found, sleeping 10s", "DEBUG")
                 with scraper_lock:
@@ -527,16 +527,15 @@ def loop_get_rankings(database, world="Auroria", debug=False):
                 with scraper_lock:
                     scraper_state = "scraping"
                 r=get_ranking()
-                if len(r)==1:
-                    log_console("new ranking reset, no data yet", "SUCCESS")
-                    last_update = current_update
-                    with scraper_lock:
-                        scraper_state = "idle"
-                    continue
-                rankings = r[1]
-                rankparsed = parse_to_db_formatted(rankings, current_update)
-                database.update(rankparsed, current_update)
-                database.save()
+                if r is None or len(r) < 2:
+                    rankings=[None, pd.DataFrame(columns=['Jogador','RAW no período'])]
+                    rankparsed = parse_to_db_formatted(rankings, current_update)
+                    database.update(rankparsed, current_update)
+                    database.save()
+                else:
+                    pass
+
+                
                 last_update = current_update
                 log_console(f"Rankings updated successfully at {current_update}", "SUCCESS")
                 
