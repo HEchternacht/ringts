@@ -137,7 +137,9 @@ class Database:
         self.folder = folder
         self.exps_file = f"{folder}/exps.csv"
         self.deltas_file = f"{folder}/deltas.csv"
+        self.reset_date_file = f"{folder}/last_reset.txt"
         self.lock = threading.Lock()
+        self.reset_done_today = False  # Flag to avoid multiple reset checks
         
         # Ensure data directory exists
         if not os.path.exists(folder):
@@ -260,6 +262,58 @@ class Database:
         """Get all delta records"""
         with self.lock:
             return self._read_deltas()
+    
+    def check_and_reset_daily(self):
+        """Check if daily reset is needed (at 10:02 AM) and reset EXP if necessary"""
+        # Quick check: if we already reset today, skip all file I/O
+        if self.reset_done_today:
+            return False
+        
+        with self.lock:
+            now = datetime.now() - timedelta(hours=3)  # Apply timezone offset
+            today_str = now.strftime("%Y-%m-%d")
+            
+            # Check if it's past 10:02 AM
+            reset_time = now.replace(hour=10, minute=2, second=0, microsecond=0)
+            if now < reset_time:
+                return False  # Not yet time for reset today
+            
+            # Check last reset date
+            try:
+                with open(self.reset_date_file, 'r') as f:
+                    last_reset = f.read().strip()
+                if last_reset == today_str:
+                    self.reset_done_today = True  # Mark flag
+                    return False  # Already reset today
+            except FileNotFoundError:
+                pass  # No previous reset file, proceed with reset
+            
+            # Perform reset
+            log_console("Daily ranking reset triggered at 10:02 AM", "INFO")
+            exps = self._read_exps()
+            deltas = self._read_deltas()
+            
+            if not exps.empty:
+                # Create final deltas for today before reset to preserve history
+                reset_timestamp = pd.to_datetime(reset_time)
+           
+                
+                # Reset all EXP values to 0
+                exps['exp'] = 0
+                exps['last update'] = reset_timestamp
+                
+                # Save changes
+                self._write_exps(exps)
+                self._write_deltas(deltas)
+                
+                log_console(f"Reset {len(exps)} players' EXP to 0. Historical data preserved.", "SUCCESS")
+            
+            # Update last reset date
+            with open(self.reset_date_file, 'w') as f:
+                f.write(today_str)
+            
+            self.reset_done_today = True  # Mark flag after successful reset
+            return True
 
 
 # Logging function
@@ -437,6 +491,9 @@ def loop_get_rankings(database, world="Auroria", debug=False):
 
     while scraper_running:
         try:
+            # Check for daily reset before processing updates
+            database.check_and_reset_daily()
+            
             with scraper_lock:
                 scraper_state = "checking"
             
