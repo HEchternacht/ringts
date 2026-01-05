@@ -528,13 +528,12 @@ def loop_get_rankings(database, world="Auroria", debug=False):
                     scraper_state = "scraping"
                 r=get_ranking()
                 if r is None or len(r) < 2:
-                    rankings=[None, pd.DataFrame(columns=['Jogador','RAW no período'])]
+                    pass
+                else:
+                    rankings = r[1]
                     rankparsed = parse_to_db_formatted(rankings, current_update)
                     database.update(rankparsed, current_update)
                     database.save()
-                else:
-                    pass
-
                 
                 last_update = current_update
                 log_console(f"Rankings updated successfully at {current_update}", "SUCCESS")
