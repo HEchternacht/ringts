@@ -1,52 +1,259 @@
-# Tibia Character Data Scraper & Database System
+# RINGTS - Real-time Interactive Guild Tracking System
 
-A comprehensive system for scraping, storing, and analyzing Tibia character data from rubinothings.com.br with SQLite database backend.
+A real-time analytics dashboard for tracking player experience gains and performance in Rubinot. Built with Flask, Plotly, and modern web technologies.
 
-## Features
+![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
+![Flask](https://img.shields.io/badge/flask-3.1.2-green.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-- 🎯 **Smart Data Collection**: Only stores new/changed data (no duplicates)
-- 📊 **Complete Tracking**: Deaths, kills, online time, and experience progression
-- ⏱️ **Scraping Session Tracking**: Tracks scraping times and status updates
-- 📈 **Analytics**: Calculate XP growth, death rates, kill rates, and online time statistics
-- 🚀 **Bulk Processing**: Process multiple characters efficiently
-- 📄 **Data Export**: Export character data to CSV files
-- 💾 **SQLite Backend**: No database server required, single file database
+## 🎮 Features
 
-## Database Schema
+### 📊 Interactive Visualizations
+- **Real-time EXP tracking** - Monitor player experience gains over time
+- **Interactive Plotly graphs** - Zoom, pan, and explore data dynamically
+- **Multi-player comparison** - Compare up to multiple players simultaneously
+- **Date range filtering** - Analyze specific time periods
 
-The system uses 6 main tables:
+### 🏆 Rankings & Statistics
+- **Player rankings table** - Sortable, searchable rankings
+- **Detailed statistics** - Total EXP, averages, min/max gains
+- **Percentile rankings** - See where players stand
+- **All-time and period-based** - Compare different timeframes
 
-1. **characters** - Main character information
-2. **scraping_sessions** - Tracks each scraping run with timestamps
-3. **character_deaths** - Death records with timestamps and details
-4. **character_kills** - Kill records with victim information
-5. **character_online_times** - Daily online time tracking
-6. **character_experiences** - Daily XP and level progression
+### 🔴 Live Feed
+- **Real-time updates** - See EXP gains as they happen (polling every 1 minute)
+- **Grouped by time** - Updates organized by collection time
+- **Sorted by gain** - Highest gains displayed first
+- **Click to view** - Click any player to see their individual graph
 
-## Files Structure
+### 🖥️ System Console
+- **Live logs** - Real-time server-sent events stream
+- **Scraper status** - Monitor background data collection
+- **Manual updates** - Trigger ranking updates on demand
+- **Error tracking** - View system errors and warnings
 
-- `alchemy.py` - SQLAlchemy database models and connection management
-- `utils.py` - Data processing and insertion functions
-- `analytics.py` - Analysis and reporting functions
-- `example_usage.py` - Usage examples and testing
-- `tet.ipynb` - Main scraping notebook with database integration
-- `requirements.txt` - Python package dependencies
+## 🚀 Quick Start
 
-## Setup Instructions
+### Prerequisites
+- Python 3.12+
+- pip or uv package manager
 
-### 1. Install Dependencies
+### Installation
 
+1. **Clone the repository**
+```bash
+git clone <your-repo-url>
+cd ringts
+```
+
+2. **Install dependencies**
+
+Using pip:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Setup SQLite Database
+Using uv (recommended):
+```bash
+uv sync
+```
 
-SQLite is built into Python, so no additional database server installation is required! The system will automatically create a database file when you first run it.
+3. **Run the application**
+```bash
+python flask_app.py
+```
 
-### 3. Configure Database Connection
+4. **Open your browser**
+```
+http://localhost:5000
+```
 
-Update the database connection in your code (much simpler with SQLite):
+## 🐳 Docker Deployment
+
+See [README-DEPLOYMENT.md](README-DEPLOYMENT.md) for detailed deployment instructions.
+
+**Quick Deploy:**
+```bash
+docker-compose up -d
+```
+
+## 📖 Usage
+
+### Dashboard Tab
+1. **Select Players** - Search and click to add players to analysis
+2. **Choose Date Range** (optional) - Filter by specific time period
+3. **Generate Visualization** - Click to create interactive graphs
+4. **View Statistics** - See detailed stats and rankings below graph
+
+### Rankings Table Tab
+1. **Select Date Range** - Choose period or leave empty for all-time
+2. **Load Rankings** - View complete player rankings
+3. **Search/Sort** - Use controls to filter and order results
+4. **Click Player Names** - View individual player graphs
+
+### Console Tab
+- Monitor real-time system logs
+- View scraper status and updates
+- Track errors and debugging info
+
+## 🏗️ Architecture
+
+### Backend
+- **Flask** - Web framework
+- **Pandas** - Data manipulation and analysis
+- **Plotly** - Interactive visualization generation
+- **BeautifulSoup4** - Web scraping
+- **httpx** - Async HTTP requests with proxy support
+
+### Frontend
+- **Vanilla JavaScript** - No framework overhead
+- **Plotly.js** - Client-side rendering
+- **Server-Sent Events** - Real-time console updates
+- **Polling** - Delta updates every 1 minute
+
+### Data Storage
+- **CSV files** - Simple, portable data storage
+- **File-based locking** - Thread-safe operations
+- **Abstraction layer** - Easy migration to SQLite/PostgreSQL
+
+## 📁 Project Structure
+
+```
+ringts/
+├── flask_app.py           # Main Flask application
+├── static/
+│   ├── app.js            # Frontend JavaScript
+│   └── style.css         # Styling
+├── templates/
+│   └── index.html        # Main HTML template
+├── data/                 # CSV storage (auto-created)
+│   ├── exps.csv         # Player experience data
+│   └── deltas.csv       # Experience change records
+├── Dockerfile            # Docker container definition
+├── docker-compose.yml    # Docker Compose orchestration
+├── requirements.txt      # Python dependencies
+└── README.md            # This file
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+Copy `.env.example` to `.env` and customize:
+
+```bash
+FLASK_APP=flask_app.py
+FLASK_ENV=production
+HOST=0.0.0.0
+PORT=5000
+```
+
+### Application Settings
+Edit `flask_app.py` to customize:
+- **Scraper interval** - How often to check for updates
+- **Proxy list** - HTTP proxies for web scraping
+- **World/Guild** - Target world and guild name
+- **Data folder** - CSV storage location
+
+## 🛠️ Development
+
+### Running in Development Mode
+
+```bash
+# With debug enabled
+python flask_app.py
+```
+
+### Code Structure
+
+**Database Layer:**
+- `Database` class - Abstraction for CSV storage
+- `_read_exps()` / `_write_exps()` - EXP data operations
+- `_read_deltas()` / `_write_deltas()` - Delta operations
+- Thread-safe locking
+
+**Scraper:**
+- `get_ranking()` - Fetch guild rankings
+- `return_last_update()` - Get latest update timestamp
+- `loop_get_rankings()` - Background scraper loop
+- Auto-restart on failure
+
+**API Endpoints:**
+- `GET /api/players` - List all players
+- `POST /api/graph` - Generate visualization
+- `GET /api/delta` - Polling endpoint for updates
+- `POST /api/rankings-table` - Get rankings data
+- `GET /api/console-stream` - SSE for logs
+- `POST /api/manual-update` - Trigger update
+
+## 🚨 Troubleshooting
+
+### Port Already in Use
+```bash
+# Find process using port 5000
+netstat -ano | findstr :5000  # Windows
+lsof -i :5000                 # Linux/Mac
+
+# Kill the process or change port in flask_app.py
+```
+
+### Scraper Not Working
+- Check proxy list in `flask_app.py`
+- Verify network connectivity
+- Check console logs for errors
+- Try manual update button
+
+### Data Not Persisting
+- Ensure `data/` folder exists
+- Check file permissions
+- Verify disk space
+
+### High Memory Usage
+- Reduce worker count in Gunicorn
+- Limit delta history in database
+- Consider database migration to SQLite
+
+## 📊 Performance
+
+### Optimization Tips
+1. **Database Migration** - Switch to SQLite for better performance with large datasets
+2. **Caching** - Implement Redis for frequently accessed data
+3. **Background Workers** - Separate scraper from web server
+4. **Load Balancing** - Use nginx for multiple instances
+
+### Current Limitations
+- CSV file I/O on every request (consider SQLite)
+- Single-threaded scraper
+- In-memory delta queue (not persistent across restarts)
+- No authentication/authorization
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📝 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## 🙏 Acknowledgments
+
+- Rubinot community for inspiration
+- Flask and Plotly teams for excellent frameworks
+- All contributors and testers
+
+## 📧 Contact
+
+For questions, issues, or suggestions, please open an issue on GitHub.
+
+---
+
+**Built with ❤️ for the Rubinot community**
+
 
 ```python
 # Simple SQLite setup - just specify a database file path
