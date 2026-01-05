@@ -133,7 +133,7 @@ class Database:
     Database abstraction layer for storing player EXP data.
     Currently uses CSV files, designed to be easily swappable with SQLite.
     """
-    def __init__(self, folder="data/"):
+    def __init__(self, folder="/var/data"):
         self.folder = folder
         self.exps_file = f"{folder}/exps.csv"
         self.deltas_file = f"{folder}/deltas.csv"
