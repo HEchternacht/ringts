@@ -17,6 +17,9 @@ import traceback
 
 app = Flask(__name__)
 
+# Upload password from environment variable
+UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
+
 # Error Handlers
 @app.errorhandler(400)
 def handle_bad_request(e):
@@ -133,7 +136,7 @@ class Database:
     Database abstraction layer for storing player EXP data.
     Currently uses CSV files, designed to be easily swappable with SQLite.
     """
-    def __init__(self, folder="/var/data"):
+    def __init__(self, folder="var//data/"):
         self.folder = folder
         self.exps_file = f"{folder}/exps.csv"
         self.deltas_file = f"{folder}/deltas.csv"
@@ -501,7 +504,7 @@ def loop_get_rankings(database, world="Auroria", debug=False):
     scraper_running = True
     last_update = 'na'
     log_console(f"Starting ranking scraper for {world}")
-
+    runned_once=False
     while scraper_running:
         try:
             with scraper_lock:
@@ -523,8 +526,14 @@ def loop_get_rankings(database, world="Auroria", debug=False):
                 
                 with scraper_lock:
                     scraper_state = "scraping"
-                
-                rankings = get_ranking()[1]
+                r=get_ranking()
+                if len(r)==1:
+                    log_console("new ranking reset, no data yet", "SUCCESS")
+                    last_update = current_update
+                    with scraper_lock:
+                        scraper_state = "idle"
+                    continue
+                rankings = r[1]
                 rankparsed = parse_to_db_formatted(rankings, current_update)
                 database.update(rankparsed, current_update)
                 database.save()
@@ -868,6 +877,112 @@ def get_scraper_status():
         'last_update': deltas['update time'].max().isoformat() if not deltas.empty else None,
         'last_check': last_status_check.isoformat()
     })
+
+
+@app.route('/api/download/deltas')
+def download_deltas():
+    """Download deltas.csv file"""
+    from flask import send_file
+    try:
+        return send_file(db.deltas_file, as_attachment=True, download_name='deltas.csv')
+    except Exception as e:
+        log_console(f"Error downloading deltas.csv: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/download/exps')
+def download_exps():
+    """Download exps.csv file"""
+    from flask import send_file
+    try:
+        return send_file(db.exps_file, as_attachment=True, download_name='exps.csv')
+    except Exception as e:
+        log_console(f"Error downloading exps.csv: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/upload/deltas', methods=['POST'])
+def upload_deltas():
+    """Upload deltas.csv file"""
+    try:
+        # Check password
+        password = request.form.get('password')
+        if password != UPLOAD_PASSWORD:
+            return jsonify({'error': 'Invalid password'}), 401
+        
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'Only CSV files are allowed'}), 400
+        
+        # Read and validate the CSV
+        df = pd.read_csv(file)
+        required_columns = ['name', 'deltaexp', 'update time']
+        if not all(col in df.columns for col in required_columns):
+            return jsonify({'error': f'CSV must have columns: {required_columns}'}), 400
+        
+        # Backup existing file
+        import shutil
+        if os.path.exists(db.deltas_file):
+            backup_file = db.deltas_file.replace('.csv', '_backup.csv')
+            shutil.copy(db.deltas_file, backup_file)
+            log_console(f"Created backup: {backup_file}", "INFO")
+        
+        # Save the uploaded file
+        df.to_csv(db.deltas_file, index=False)
+        log_console(f"Uploaded deltas.csv with {len(df)} records", "SUCCESS")
+        
+        return jsonify({'success': True, 'records': len(df)})
+    except Exception as e:
+        log_console(f"Error uploading deltas.csv: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/upload/exps', methods=['POST'])
+def upload_exps():
+    """Upload exps.csv file"""
+    try:
+        # Check password
+        password = request.form.get('password')
+        if password != UPLOAD_PASSWORD:
+            return jsonify({'error': 'Invalid password'}), 401
+        
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'Only CSV files are allowed'}), 400
+        
+        # Read and validate the CSV
+        df = pd.read_csv(file)
+        required_columns = ['name', 'exp', 'last update']
+        if not all(col in df.columns for col in required_columns):
+            return jsonify({'error': f'CSV must have columns: {required_columns}'}), 400
+        
+        # Backup existing file
+        import shutil
+        if os.path.exists(db.exps_file):
+            backup_file = db.exps_file.replace('.csv', '_backup.csv')
+            shutil.copy(db.exps_file, backup_file)
+            log_console(f"Created backup: {backup_file}", "INFO")
+        
+        # Save the uploaded file
+        df.to_csv(db.exps_file, index=False)
+        log_console(f"Uploaded exps.csv with {len(df)} records", "SUCCESS")
+        
+        return jsonify({'success': True, 'records': len(df)})
+    except Exception as e:
+        log_console(f"Error uploading exps.csv: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/player-graph/<player_name>', methods=['GET'])

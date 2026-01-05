@@ -51,6 +51,7 @@
         <div class="tab-navigation">
             <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
             <button class="tab-btn" data-tab="rankings">🏆 Rankings Table</button>
+            <button class="tab-btn" data-tab="data">💾 Data Management</button>
             <button class="tab-btn" data-tab="console">🖥️ Console</button>
         </div>
 
@@ -162,6 +163,56 @@
             </div>
         </div>
         <!-- End Rankings Table Tab -->
+
+        <!-- Data Management Tab -->
+        <div class="tab-content" id="data-tab">
+            <div class="data-management-container">
+                <h2>💾 Data Management</h2>
+                <p class="info-text">Upload and download your CSV database files for backup or migration purposes.</p>
+                
+                <div class="data-section">
+                    <h3>📊 Deltas Data (deltas.csv)</h3>
+                    <p class="description">Contains all player EXP change records over time</p>
+                    <div class="data-actions">
+                        <a href="/api/download/deltas" class="btn-primary" download>⬇️ Download deltas.csv</a>
+                        <div class="upload-container">
+                            <input type="password" id="deltasPassword" placeholder="Upload password" class="password-input" />
+                            <input type="file" id="uploadDeltas" accept=".csv" style="display: none;" />
+                            <button class="btn-secondary" onclick="document.getElementById('uploadDeltas').click()">⬆️ Upload deltas.csv</button>
+                            <span id="deltasFileName" class="file-name"></span>
+                        </div>
+                    </div>
+                    <div id="deltasStatus" class="status-message"></div>
+                </div>
+
+                <div class="data-section">
+                    <h3>👥 Player Experience Data (exps.csv)</h3>
+                    <p class="description">Contains current player EXP totals and last update times</p>
+                    <div class="data-actions">
+                        <a href="/api/download/exps" class="btn-primary" download>⬇️ Download exps.csv</a>
+                        <div class="upload-container">
+                            <input type="password" id="expsPassword" placeholder="Upload password" class="password-input" />
+                            <input type="file" id="uploadExps" accept=".csv" style="display: none;" />
+                            <button class="btn-secondary" onclick="document.getElementById('uploadExps').click()">⬆️ Upload exps.csv</button>
+                            <span id="expsFileName" class="file-name"></span>
+                        </div>
+                    </div>
+                    <div id="expsStatus" class="status-message"></div>
+                </div>
+
+                <div class="warning-box">
+                    <h4>⚠️ Important Notes:</h4>
+                    <ul>
+                        <li>Password is required to upload files</li>
+                        <li>Always backup your current data before uploading new files</li>
+                        <li>Uploaded files must be valid CSV format with correct column names</li>
+                        <li>A backup of the existing file will be created automatically</li>
+                        <li>The scraper will continue using the new data immediately after upload</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <!-- End Data Management Tab -->
 
         <!-- Console Tab -->
         <div class="tab-content" id="console-tab">

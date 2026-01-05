@@ -51,6 +51,10 @@ function setupEventListeners() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
+    
+    // Data management tab
+    document.getElementById('uploadDeltas').addEventListener('change', handleDeltasUpload);
+    document.getElementById('uploadExps').addEventListener('change', handleExpsUpload);
 }
 
 // Load players from API
@@ -885,4 +889,119 @@ function showNotification(message, type = 'info') {
         notification.style.animation = 'slideOut 0.3s ease-in';
         setTimeout(() => notification.remove(), 300);
     }, 3000);
+}
+
+// Data Management Functions
+async function handleDeltasUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    const fileNameSpan = document.getElementById('deltasFileName');
+    const statusDiv = document.getElementById('deltasStatus');
+    const passwordInput = document.getElementById('deltasPassword');
+    const password = passwordInput.value.trim();
+    
+    if (!password) {
+        statusDiv.textContent = '❌ Error: Password is required';
+        statusDiv.className = 'status-message error';
+        showNotification('❌ Please enter password', 'error');
+        event.target.value = '';
+        return;
+    }
+    
+    fileNameSpan.textContent = file.name;
+    statusDiv.textContent = 'Uploading...';
+    statusDiv.className = 'status-message info';
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('password', password);
+    
+    try {
+        const response = await fetch('/api/upload/deltas', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+            statusDiv.textContent = `✅ Successfully uploaded ${data.records} records. Backup created.`;
+            statusDiv.className = 'status-message success';
+            showNotification('✅ Deltas file uploaded successfully!', 'success');
+            passwordInput.value = ''; // Clear password
+        } else if (response.status === 401) {
+            statusDiv.textContent = '❌ Error: Invalid password';
+            statusDiv.className = 'status-message error';
+            showNotification('❌ Invalid password', 'error');
+        } else {
+            statusDiv.textContent = `❌ Error: ${data.error}`;
+            statusDiv.className = 'status-message error';
+            showNotification(`❌ Upload failed: ${data.error}`, 'error');
+        }
+    } catch (error) {
+        statusDiv.textContent = `❌ Error: ${error.message}`;
+        statusDiv.className = 'status-message error';
+        showNotification(`❌ Upload failed: ${error.message}`, 'error');
+    }
+    
+    // Clear the file input
+    event.target.value = '';
+}
+
+async function handleExpsUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    const fileNameSpan = document.getElementById('expsFileName');
+    const statusDiv = document.getElementById('expsStatus');
+    const passwordInput = document.getElementById('expsPassword');
+    const password = passwordInput.value.trim();
+    
+    if (!password) {
+        statusDiv.textContent = '❌ Error: Password is required';
+        statusDiv.className = 'status-message error';
+        showNotification('❌ Please enter password', 'error');
+        event.target.value = '';
+        return;
+    }
+    
+    fileNameSpan.textContent = file.name;
+    statusDiv.textContent = 'Uploading...';
+    statusDiv.className = 'status-message info';
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('password', password);
+    
+    try {
+        const response = await fetch('/api/upload/exps', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+            statusDiv.textContent = `✅ Successfully uploaded ${data.records} records. Backup created.`;
+            statusDiv.className = 'status-message success';
+            showNotification('✅ Exps file uploaded successfully!', 'success');
+            passwordInput.value = ''; // Clear password
+        } else if (response.status === 401) {
+            statusDiv.textContent = '❌ Error: Invalid password';
+            statusDiv.className = 'status-message error';
+            showNotification('❌ Invalid password', 'error');
+        } else {
+            statusDiv.textContent = `❌ Error: ${data.error}`;
+            statusDiv.className = 'status-message error';
+            showNotification(`❌ Upload failed: ${data.error}`, 'error');
+        }
+    } catch (error) {
+        statusDiv.textContent = `❌ Error: ${error.message}`;
+        statusDiv.className = 'status-message error';
+        showNotification(`❌ Upload failed: ${error.message}`, 'error');
+    }
+    
+    // Clear the file input
+    event.target.value = '';
 }
