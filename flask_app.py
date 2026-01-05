@@ -20,6 +20,8 @@ app = Flask(__name__)
 # Upload password from environment variable
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 
+
+
 # Error Handlers
 @app.errorhandler(400)
 def handle_bad_request(e):
@@ -131,12 +133,16 @@ scraper_state = "idle"  # idle, checking, scraping, sleeping
 scraper_lock = threading.Lock()
 last_status_check = None
 
+
+root_path=
+
+
 class Database:
     """
     Database abstraction layer for storing player EXP data.
     Currently uses CSV files, designed to be easily swappable with SQLite.
     """
-    def __init__(self, folder="var//data/"):
+    def __init__(self, folder="//var//data/"):
         self.folder = folder
         self.exps_file = f"{folder}/exps.csv"
         self.deltas_file = f"{folder}/deltas.csv"
