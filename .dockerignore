@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Project specific
+RINGTSV2/
+example_usage.py
+main.py
+alchemy.py
+analytics.py
+advanced_analytics.py
+utils.py
+rawget.ipynb
+rubinot.ipynb
+showcase_analysis.ipynb
+tet.ipynb
+*.md
+!README.md
+
+# Local data (optional - include if you want fresh data in container)
+# data/*.csv
