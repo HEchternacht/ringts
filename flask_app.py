@@ -263,20 +263,33 @@ class Database:
         with self.lock:
             return self._read_deltas()
     
-    def check_and_reset_daily(self):
-        """Check if daily reset is needed (at 10:02 AM) and reset EXP if necessary"""
+    def check_and_reset_daily(self, update_time=None):
+        """Check if daily reset is needed before first valid update after 10:02 AM"""
         # Quick check: if we already reset today, skip all file I/O
         if self.reset_done_today:
+            return False
+        
+        # If no update_time provided, just check without resetting
+        if update_time is None:
             return False
         
         with self.lock:
             now = datetime.now() - timedelta(hours=3)  # Apply timezone offset
             today_str = now.strftime("%Y-%m-%d")
             
-            # Check if it's past 10:02 AM
+            # Convert update_time to datetime if it's not already
+            if isinstance(update_time, str):
+                update_time = pd.to_datetime(update_time)
+            
+            # Check if update is after 10:02 AM
             reset_time = now.replace(hour=10, minute=2, second=0, microsecond=0)
-            if now < reset_time:
-                return False  # Not yet time for reset today
+            update_datetime = update_time
+            if isinstance(update_datetime, pd.Timestamp):
+                update_datetime = update_datetime.to_pydatetime()
+            
+            # If update is before 10:02, no reset needed
+            if update_datetime.time() < reset_time.time():
+                return False
             
             # Check last reset date
             try:
@@ -288,8 +301,8 @@ class Database:
             except FileNotFoundError:
                 pass  # No previous reset file, proceed with reset
             
-            # Perform reset
-            log_console("Daily ranking reset triggered at 10:02 AM", "INFO")
+            # Perform reset before processing this update
+            log_console("Daily ranking reset triggered before first update after 10:02 AM", "INFO")
             exps = self._read_exps()
             deltas = self._read_deltas()
             
@@ -491,9 +504,6 @@ def loop_get_rankings(database, world="Auroria", debug=False):
 
     while scraper_running:
         try:
-            # Check for daily reset before processing updates
-            database.check_and_reset_daily()
-            
             with scraper_lock:
                 scraper_state = "checking"
             
@@ -507,6 +517,10 @@ def loop_get_rankings(database, world="Auroria", debug=False):
                 time.sleep(60)
             else:
                 log_console(f"New update detected: {last_update} -> {current_update}")
+                
+                # Check for daily reset before processing this update
+                database.check_and_reset_daily(current_update)
+                
                 with scraper_lock:
                     scraper_state = "scraping"
                 
