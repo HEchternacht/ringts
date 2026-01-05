@@ -408,13 +408,54 @@ async function checkScraperStatus() {
         const statusDiv = document.getElementById('scraperStatus');
         const indicator = statusDiv.querySelector('.status-indicator');
         const text = statusDiv.querySelector('.status-text');
+        const updateButton = document.getElementById('manualUpdate');
+        
+        // Update last check and last update times
+        const lastUpdateTime = document.getElementById('lastUpdateTime');
+        const lastCheckTime = document.getElementById('lastCheckTime');
+        
+        if (data.last_update) {
+            lastUpdateTime.textContent = new Date(data.last_update).toLocaleString();
+        }
+        
+        if (data.last_check) {
+            lastCheckTime.textContent = new Date(data.last_check).toLocaleString();
+        }
         
         if (data.running) {
             indicator.className = 'status-indicator running';
-            text.textContent = `Scraper Active | Last update: ${data.last_update ? new Date(data.last_update).toLocaleString() : 'N/A'}`;
+            
+            // Update button based on state
+            if (data.state === 'checking') {
+                updateButton.disabled = true;
+                updateButton.classList.add('verifying');
+                updateButton.classList.remove('updating');
+                updateButton.textContent = '🔍 Verifying Data...';
+                text.textContent = 'Scraper: Verifying Data';
+            } else if (data.state === 'scraping') {
+                updateButton.disabled = true;
+                updateButton.classList.add('updating');
+                updateButton.classList.remove('verifying');
+                updateButton.textContent = '⚙️ Running Scrappy...';
+                text.textContent = 'Scraper: Collecting Data';
+            } else if (data.state === 'sleeping') {
+                updateButton.disabled = false;
+                updateButton.classList.remove('updating', 'verifying');
+                updateButton.textContent = '🔄 Update Now';
+                text.textContent = 'Scraper: Idle (Waiting)';
+            } else {
+                // idle state
+                updateButton.disabled = false;
+                updateButton.classList.remove('updating', 'verifying');
+                updateButton.textContent = '🔄 Update Now';
+                text.textContent = 'Scraper Active';
+            }
         } else {
             indicator.className = 'status-indicator error';
             text.textContent = 'Scraper Offline';
+            updateButton.disabled = false;
+            updateButton.classList.remove('updating', 'verifying');
+            updateButton.textContent = '🔄 Update Now';
         }
     } catch (error) {
         console.error('Failed to check scraper status:', error);
@@ -771,9 +812,23 @@ function renderDeltaFeed() {
 // Manual Update Function
 async function triggerManualUpdate() {
     const button = document.getElementById('manualUpdate');
+    
+    // Check current scraper state first
+    try {
+        const statusResponse = await fetch('/api/scraper-status');
+        const statusData = await statusResponse.json();
+        
+        if (statusData.state === 'checking' || statusData.state === 'scraping') {
+            showNotification('⚠️ Scraper is already running. Please wait...', 'warning');
+            return;
+        }
+    } catch (error) {
+        console.error('Error checking scraper status:', error);
+    }
+    
     button.disabled = true;
-    button.classList.add('updating');
-    button.textContent = '⏳ Updating...';
+    button.classList.add('verifying');
+    button.textContent = '🔍 Verifying Data...';
 
     try {
         const response = await fetch('/api/manual-update', {
@@ -790,15 +845,19 @@ async function triggerManualUpdate() {
             // Optionally reload players and rankings
             await loadPlayers();
             await loadRecentUpdates();
+            await loadDeltas();
+        } else if (response.status === 409) {
+            showNotification(`⚠️ ${data.message}`, 'warning');
         } else {
             showNotification(`❌ Update failed: ${data.message}`, 'error');
         }
     } catch (error) {
         showNotification(`❌ Update failed: ${error.message}`, 'error');
     } finally {
-        button.disabled = false;
-        button.classList.remove('updating');
-        button.textContent = '🔄 Update Now';
+        // Button state will be updated by next status check
+        setTimeout(() => {
+            checkScraperStatus();
+        }, 1000);
     }
 }
 

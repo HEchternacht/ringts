@@ -124,6 +124,9 @@ def get_multiple(url: str, proxies: list):
 console_queue = queue.Queue()
 delta_queue = queue.Queue()
 scraper_running = False
+scraper_state = "idle"  # idle, checking, scraping, sleeping
+scraper_lock = threading.Lock()
+last_status_check = None
 
 class Database:
     """
@@ -326,8 +329,16 @@ def get_ranking(world="Auroria", guildname="Ascended Auroria"):
     """Get ranking from website"""
     url = f"https://rubinothings.com.br/guild.php?guild={guildname.replace(' ', '+')}&world={world}"
 
-
-    response=get_multiple(url,pp)
+    # Try direct fetch first
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+            response = get_multiple(url, pp)
+    except Exception as e:
+        log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
+        response = get_multiple(url, pp)
+    
     if not response:
         return None
     print(response)
@@ -339,7 +350,17 @@ def get_ranking(world="Auroria", guildname="Ascended Auroria"):
 def get_last_status_updates(world="Auroria"):
     """Get status updates to determine correct scraping timestamp"""
     url = "https://rubinothings.com.br/status"
-    response=get_multiple(url,pp)
+    
+    # Try direct fetch first
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+            response = get_multiple(url, pp)
+    except Exception as e:
+        log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
+        response = get_multiple(url, pp)
+    
     if not response:
         return None
     soup = bs4.BeautifulSoup(response.text, 'html.parser')
@@ -410,29 +431,42 @@ def parse_to_db_formatted(df, last_update):
 def loop_get_rankings(database, world="Auroria", debug=False):
     """Background loop to continuously fetch rankings"""
     database.load()
-    global scraper_running
+    global scraper_running, scraper_state
     scraper_running = True
     last_update = 'na'
     log_console(f"Starting ranking scraper for {world}")
 
     while scraper_running:
         try:
-
+            with scraper_lock:
+                scraper_state = "checking"
+            
             current_update = return_last_update(world)
+            
             if last_update == current_update:
                 if debug:
                     log_console("No new update found, sleeping 10s", "DEBUG")
+                with scraper_lock:
+                    scraper_state = "sleeping"
                 time.sleep(10)
             else:
                 log_console(f"New update detected: {last_update} -> {current_update}")
+                with scraper_lock:
+                    scraper_state = "scraping"
+                
                 rankings = get_ranking()[1]
                 rankparsed = parse_to_db_formatted(rankings, current_update)
                 database.update(rankparsed, current_update)
                 database.save()
                 last_update = current_update
                 log_console(f"Rankings updated successfully at {current_update}", "SUCCESS")
+                
+                with scraper_lock:
+                    scraper_state = "idle"
         except Exception as e:
             log_console(f"Error in scraper: {str(e)}", "ERROR")
+            with scraper_lock:
+                scraper_state = "sleeping"
             time.sleep(30)  # Wait before retry
 
 
@@ -751,10 +785,18 @@ def console_stream():
 @app.route('/api/scraper-status')
 def get_scraper_status():
     """Get scraper status"""
+    global last_status_check
+    last_status_check = datetime.now()
+    
     deltas = db.get_deltas()
+    with scraper_lock:
+        state = scraper_state
+    
     return jsonify({
         'running': scraper_running,
-        'last_update': deltas['update time'].max().isoformat() if not deltas.empty else None
+        'state': state,  # idle, checking, scraping, sleeping
+        'last_update': deltas['update time'].max().isoformat() if not deltas.empty else None,
+        'last_check': last_status_check.isoformat()
     })
 
 
@@ -819,13 +861,38 @@ def get_deltas():
 @app.route('/api/manual-update', methods=['POST'])
 def manual_update():
     """Manually trigger a ranking update"""
+    global scraper_state
+    
+    # Check if scraper is already active (not sleeping or idle)
+    with scraper_lock:
+        current_state = scraper_state
+    
+    if current_state in ['checking', 'scraping']:
+        return jsonify({
+            'success': False,
+            'message': 'Scraper is already running',
+            'state': current_state
+        }), 409
+    
     try:
         log_console("Manual update triggered", "INFO")
+        
+        with scraper_lock:
+            scraper_state = "checking"
+        
         current_update = return_last_update()
+        
+        with scraper_lock:
+            scraper_state = "scraping"
+        
         rankings = get_ranking()[1]
         rankparsed = parse_to_db_formatted(rankings, current_update)
         db.update(rankparsed, current_update)
         db.save()
+        
+        with scraper_lock:
+            scraper_state = "idle"
+        
         log_console(f"Manual update completed successfully at {current_update}", "SUCCESS")
         return jsonify({
             'success': True,
@@ -835,6 +902,10 @@ def manual_update():
     except Exception as e:
         error_msg = str(e)
         log_console(f"Manual update failed: {error_msg}", "ERROR")
+        
+        with scraper_lock:
+            scraper_state = "idle"
+        
         return jsonify({
             'success': False,
             'message': f'Update failed: {error_msg}'
