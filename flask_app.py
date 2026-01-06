@@ -15,6 +15,11 @@ from bs4 import BeautifulSoup
 import bs4
 import werkzeug.exceptions
 import traceback
+import httpx
+from pebble import ThreadPool
+from concurrent.futures import TimeoutError, as_completed
+import time
+import threading
 
 app = Flask(__name__)
 
@@ -94,40 +99,88 @@ pp=['http://103.155.62.141:8081',
  'http://194.26.141.202:3128',
  'http://205.164.192.115:999']
 
-import httpx
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-
-def get_resp(url, proxy):
-    try:
-        with httpx.Client(proxy=proxy) as client:
-            response = client.get(url, timeout=10)
-        return response
-    except Exception as e:
-        return str(e)
 
 
 def get_multiple(url: str, proxies: list):
-    results = []
-    # Use ThreadPoolExecutor with up to 4 workers
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        # Submit tasks
-        future_to_proxy = {executor.submit(get_resp, url, proxy): proxy for proxy in proxies}
-
-        for future in as_completed(future_to_proxy):
+    tic = time.time()
+    
+    # Local success flag - not global
+    success_flag = threading.Event()
+    
+    def get_resp(url, proxy):
+        # Check if another thread already succeeded
+        if success_flag.is_set():
+            print(f"Skipping {proxy} - already got success")
+            return None
+            
+        try:
+            with httpx.Client(proxy=proxy) as client:
+                tic_req=time.time()
+                print(f"Sending request via proxy: {proxy}")
+                
+                # Check again before making request
+                if success_flag.is_set():
+                    return None
+                    
+                response = client.get(url, timeout=30)
+                
+                # Check if we should even process this
+                if success_flag.is_set():
+                    return None
+                    
+                toc_req=time.time()
+                print(f"Response time via proxy {proxy}: {toc_req-tic_req:.2f}s")
+                print(f"Received response via proxy: {proxy} with status code {response.status_code}")
+                
+                # Return both status and content so we can check it
+                return {
+                    'status_code': response.status_code,
+                    'content': response.text,
+                    'proxy': proxy,
+                    'time': toc_req-tic_req
+                }
+        except Exception as e:
+            if not success_flag.is_set():
+                print(f"Error with {proxy}: {str(e)}")
+            return None
+    
+    pool = ThreadPool(max_workers=40)
+    
+    try:
+        # Submit all tasks
+        futures = [pool.schedule(get_resp, args=(url, proxy)) for proxy in proxies]
+        
+        # Use as_completed to get results as they finish (not in order!)
+        for future in as_completed(futures):
+            # If we already found success, break immediately
+            if success_flag.is_set():
+                break
+                
             try:
-                result = future.result()
-                results.append(result)
+                result = future.result(timeout=0.01)
+                
+                # Check if it's a successful response
+                if result and isinstance(result, dict) and result.get('status_code') == 200:
+                    toc = time.time()
+                    print(f"\n✓ SUCCESS! Total time: {toc-tic:.2f}s")
+                    print(f"✓ Successful response via proxy: {result['proxy']}")
+                    
+                    # Signal all other threads to stop
+                    success_flag.set()
+                    
+                    # Return IMMEDIATELY - don't wait for anything
+                    return result
+                    
+            except TimeoutError:
+                pass
             except Exception as e:
-                results.append(str(e))
-
-    # Filter successful responses
-    rsuccess = [x for x in results if not isinstance(x, str)]
-    if rsuccess:
-        return rsuccess[0]
+                pass
+                
+    finally:
+        # Close pool without waiting
+        pool.close()
+        
     return None
-
-
 
 
 
@@ -157,6 +210,7 @@ class Database:
         self.scraping_data_file = f"{folder}/scraping_data.json"
         self.lock = threading.Lock()
         self.reset_done_today = False  # Flag to avoid multiple reset checks
+        self.skip_next_deltas = False  # Flag to skip first delta after daily reset
         
         # Ensure data directory exists
         if not os.path.exists(folder):
@@ -187,7 +241,7 @@ class Database:
             return pd.DataFrame(columns=['name', 'exp', 'last update', 'world', 'guild'])
     
     def _read_deltas(self):
-        """Read deltas table from storage"""
+        """Read deltas table from storage"""    
         try:
             df = pd.read_csv(self.deltas_file)
             df['update time'] = pd.to_datetime(df['update time'])
@@ -334,7 +388,7 @@ class Database:
                     # Existing player - calculate delta
                     prev_exp = exps[exps['name'] == name]['exp'].values[0]
                     deltaexp = exp - prev_exp
-                    if deltaexp != 0:
+                    if deltaexp != 0 and not self.skip_next_deltas:
                         # Check if delta already exists for this player and update time
                         existing_delta_mask = (deltas['name'] == name) & (deltas['update time'] == update_time)
                         existing_delta = deltas[existing_delta_mask]
@@ -364,6 +418,8 @@ class Database:
                             'world': world,
                             'guild': guild
                         })
+                    elif deltaexp != 0 and self.skip_next_deltas:
+                        log_console(f"Skipping first delta after reset for {name}: {deltaexp} ({world} - {guild})", "INFO")
                     
                     # Update existing player
                     exps.loc[exps['name'] == name, 'exp'] = exp
@@ -381,35 +437,44 @@ class Database:
                     }
                     exps.loc[len(exps)] = new_entry
                     
-                    # Check if delta already exists for this player and update time
-                    existing_delta_mask = (deltas['name'] == name) & (deltas['update time'] == update_time)
-                    existing_delta = deltas[existing_delta_mask]
-                    
-                    if existing_delta.empty:
-                        new_delta = {
-                            'name': name, 
-                            'deltaexp': exp, 
-                            'update time': update_time,
+                    # Skip delta for new players if we just reset (they're not actually "new")
+                    if not self.skip_next_deltas:
+                        # Check if delta already exists for this player and update time
+                        existing_delta_mask = (deltas['name'] == name) & (deltas['update time'] == update_time)
+                        existing_delta = deltas[existing_delta_mask]
+                        
+                        if existing_delta.empty:
+                            new_delta = {
+                                'name': name, 
+                                'deltaexp': exp, 
+                                'update time': update_time,
+                                'world': world,
+                                'guild': guild
+                            }
+                            deltas.loc[len(deltas)] = new_delta
+                            log_console(f"New player: {name} with {exp} EXP ({world} - {guild})")
+                        else:
+                            # Duplicate found - update with latest value
+                            existing_exp = existing_delta['deltaexp'].values[0]
+                            deltas.loc[existing_delta_mask, 'deltaexp'] = exp
+                            log_console(f"Updated duplicate for new player {name} at {update_time}: {existing_exp} -> {exp} (latest)", "INFO")
+                        
+                        # Broadcast to delta stream
+                        delta_queue.put({
+                            'name': name,
+                            'deltaexp': int(exp),
+                            'update_time': update_time.isoformat(),
+                            'prev_update_time': prev_update_time.isoformat(),
                             'world': world,
                             'guild': guild
-                        }
-                        deltas.loc[len(deltas)] = new_delta
-                        log_console(f"New player: {name} with {exp} EXP ({world} - {guild})")
+                        })
                     else:
-                        # Duplicate found - update with latest value
-                        existing_exp = existing_delta['deltaexp'].values[0]
-                        deltas.loc[existing_delta_mask, 'deltaexp'] = exp
-                        log_console(f"Updated duplicate for new player {name} at {update_time}: {existing_exp} -> {exp} (latest)", "INFO")
-                    
-                    # Broadcast to delta stream
-                    delta_queue.put({
-                        'name': name,
-                        'deltaexp': int(exp),
-                        'update_time': update_time.isoformat(),
-                        'prev_update_time': prev_update_time.isoformat(),
-                        'world': world,
-                        'guild': guild
-                    })
+                        log_console(f"Skipping first delta after reset for new player {name}: {exp} ({world} - {guild})", "INFO")
+            
+            # Reset the skip flag after processing all players in this update
+            if self.skip_next_deltas:
+                self.skip_next_deltas = False
+                log_console("Reset skip_next_deltas flag - next update will record deltas normally", "INFO")
             
             # Write changes to storage immediately
             self._write_exps(exps)
@@ -488,6 +553,8 @@ class Database:
                 f.write(today_str)
             
             self.reset_done_today = True  # Mark flag after successful reset
+            self.skip_next_deltas = True  # Skip the first delta after reset
+            log_console("Set skip_next_deltas flag - next update will skip recording deltas", "INFO")
             return True
 
 
@@ -574,11 +641,13 @@ def scrape_player_data(name):
             # Build URL with params for proxy attempt
             url_with_params = f"{url}?name={name.replace(' ', '+')}"
             response = get_multiple(url_with_params, pp)
+            log_console(f"Proxy fetch response for '{name}': {response}", "INFO")
     except Exception as e:
         log_console(f"Direct fetch failed for '{name}': {str(e)}, trying proxies...", "WARNING")
         url_with_params = f"{url}?name={name.replace(' ', '+')}"
         response = get_multiple(url_with_params, pp)
-    
+        log_console(f"Proxy fetch response for '{name}': {response}", "INFO")
+
     if not response:
         log_console(f"All requests failed for '{name}'", "ERROR")
         return result
@@ -740,7 +809,9 @@ def return_last_update(world=None, save_all_data=True, database=None):
                     world_data = df.to_dict('records')
                     for record in world_data:
                         if 'last update' in record and pd.notna(record['last update']):
-                            record['last update'] = pd.to_datetime(record['last update']).isoformat()
+                            # Apply timezone offset before converting to ISO format
+                            dt = pd.to_datetime(record['last update']) - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                            record['last update'] = dt.isoformat()
                         else:
                             record['last update'] = None
                     json_data["worlds"][world_name] = world_data
@@ -813,7 +884,9 @@ def loop_get_rankings(database, debug=False):
                     world_data = df.to_dict('records')
                     for record in world_data:
                         if 'last update' in record and pd.notna(record['last update']):
-                            record['last update'] = pd.to_datetime(record['last update']).isoformat()
+                            # Apply timezone offset before converting to ISO format
+                            dt = pd.to_datetime(record['last update']) - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                            record['last update'] = dt.isoformat()
                         else:
                             record['last update'] = None
                     json_data["worlds"][world_name] = world_data

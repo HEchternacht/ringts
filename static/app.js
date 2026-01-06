@@ -436,7 +436,7 @@ async function loadSinglePlayerDetails(playerName) {
     // Switch to multi-graph tab automatically
     switchDashboardMainTab('multi-graph');
     
-    // Always clear the multi-graph first to prevent old graph from showing
+    // Always clear the multi-graph AND details content first to prevent old data from showing
     if (multiGraphDiv) {
         multiGraphDiv.innerHTML = '';
         // Also purge any Plotly data
@@ -444,6 +444,9 @@ async function loadSinglePlayerDetails(playerName) {
             Plotly.purge(multiGraphDiv);
         }
     }
+    // Clear details content as well
+    contentEl.innerHTML = '';
+    contentEl.style.display = 'none';
     
     // Check if data is cached
     if (playerDetailsCache[playerName]) {
@@ -460,7 +463,7 @@ async function loadSinglePlayerDetails(playerName) {
             // Re-render the multi-graph from cache
             if (playerDetailsCache[playerName].multiGraphData) {
                 setTimeout(() => {
-                    renderCombinedOverview(playerDetailsCache[playerName].multiGraphData, 'dashboardMultiGraphDiv');
+                    renderCombinedOverview(playerDetailsCache[playerName].multiGraphData, 'dashboardMultiGraphDiv', playerName);
                 }, 50);
             }
         }, 100);
@@ -1074,6 +1077,25 @@ async function showPlayerGraph(playerName) {
     const startDate = document.getElementById('rankStartDate').value;
     const endDate = document.getElementById('rankEndDate').value;
     
+    // Clear previous player's data immediately
+    const modalGraphDiv = document.getElementById('modalGraphDiv');
+    const modalMultiGraphDiv = document.getElementById('modalMultiGraphDiv');
+    const playerDetailsContent = document.getElementById('playerDetailsContent');
+    
+    if (modalGraphDiv && modalGraphDiv.data) {
+        Plotly.purge(modalGraphDiv);
+    }
+    if (modalMultiGraphDiv) {
+        modalMultiGraphDiv.innerHTML = '';
+        if (modalMultiGraphDiv.data) {
+            Plotly.purge(modalMultiGraphDiv);
+        }
+    }
+    if (playerDetailsContent) {
+        playerDetailsContent.innerHTML = '';
+        playerDetailsContent.style.display = 'none';
+    }
+    
     showLoading();
     
     try {
@@ -1116,6 +1138,8 @@ async function loadPlayerDetails(playerName, context = 'modal') {
     const loadingEl = document.getElementById(loadingId);
     const contentEl = document.getElementById(contentId);
     
+    // Clear old content immediately
+    contentEl.innerHTML = '';
     loadingEl.style.display = 'flex';
     contentEl.style.display = 'none';
     
@@ -1198,11 +1222,11 @@ function renderPlayerDetails(data, context = 'modal') {
     
     // Render combined overview for modal multi-graph tab
     if (context === 'modal') {
-        setTimeout(() => renderCombinedOverview(data, 'modalMultiGraphDiv'), 100);
+        setTimeout(() => renderCombinedOverview(data, 'modalMultiGraphDiv', data.player_name || null), 100);
     }
     // Render combined overview for dashboard
     if (context === 'dashboard') {
-        setTimeout(() => renderCombinedOverview(data, 'dashboardMultiGraphDiv'), 100);
+        setTimeout(() => renderCombinedOverview(data, 'dashboardMultiGraphDiv', data.player_name || null), 100);
     }
     
     return html;
@@ -1307,26 +1331,30 @@ function renderOnlineXPChart(table, index) {
     Plotly.newPlot(chartId, [trace1, trace2], layout, {responsive: true});
 }
 
-function renderCombinedOverview(data, chartElementId = 'combinedOverviewChart') {
-    if (!data || !data.tables || data.tables.length === 0) {
-        document.getElementById(chartElementId).innerHTML = '<p class="no-data">No data available for overview</p>';
-        return;
-    }
-    
-    // Aggregate all data by datetime
-    const timeSeriesData = new Map(); // key: datetime string, value: {rawXP, onlineMinutes, level, deaths, kills}
-    
-    // Process all tables
-    data.tables.forEach(table => {
-        if (!table.data || table.data.length === 0) return;
+function renderCombinedOverview(data, chartElementId = 'combinedOverviewChart', playerName = null) {
+    try {
+        if (!data || !data.tables || data.tables.length === 0) {
+            document.getElementById(chartElementId).innerHTML = '<p class="no-data">No data available for overview</p>';
+            return;
+        }
         
-        const cols = table.columns;
+        // Aggregate all data by datetime
+        const timeSeriesData = new Map(); // key: datetime string, value: {rawXP, onlineMinutes, level, deaths, kills}
+        
+        // Process all tables
+        data.tables.forEach(table => {
+            // Skip table if it's missing, has no data, or has no columns
+            if (!table || !table.data || table.data.length === 0 || !table.columns || table.columns.length === 0) return;
+            
+            const cols = table.columns;
         
         // Find date/time columns
         let dateColIdx = -1;
         let timeColIdx = -1;
         
         for (let i = 0; i < cols.length; i++) {
+            // Skip if column is not a string
+            if (typeof cols[i] !== 'string') continue;
             const col = cols[i].toLowerCase();
             if (col === 'date' || col === 'data') dateColIdx = i;
             if (col === 'time' || col === 'hora') timeColIdx = i;
@@ -1363,6 +1391,9 @@ function renderCombinedOverview(data, chartElementId = 'combinedOverviewChart') 
             
             // Parse data based on column names
             cols.forEach((colName, idx) => {
+                // Skip if column name is not a string
+                if (typeof colName !== 'string') return;
+                
                 const value = row[idx];
                 const colLower = colName.toLowerCase();
                 
@@ -1511,7 +1542,7 @@ function renderCombinedOverview(data, chartElementId = 'combinedOverviewChart') 
     }
     
     const layout = {
-        title: 'Combined Player Overview',
+        title: playerName ? `${playerName} - Player Overview` : 'Combined Player Overview',
         xaxis: {
             title: 'Date/Time',
             type: 'category',
@@ -1556,6 +1587,13 @@ function renderCombinedOverview(data, chartElementId = 'combinedOverviewChart') 
     };
     
     Plotly.newPlot(chartElementId, traces, layout, {responsive: true});
+    } catch (error) {
+        console.error('Error rendering combined overview:', error);
+        const chartElement = document.getElementById(chartElementId);
+        if (chartElement) {
+            chartElement.innerHTML = '<p class="no-data">Failed to load data: ' + error.message + '</p>';
+        }
+    }
 }
 
 function switchDetailTab(tabIndex) {
@@ -1628,7 +1666,7 @@ async function loadPlayerDetailsForMultiGraph(playerName) {
         const data = await response.json();
         
         if (data.success && data.tables.length > 0) {
-            renderCombinedOverview(data, 'modalMultiGraphDiv');
+            renderCombinedOverview(data, 'modalMultiGraphDiv', playerName);
         } else {
             multiGraphDiv.innerHTML = '<p class="no-data">No data available for multi-graph</p>';
         }

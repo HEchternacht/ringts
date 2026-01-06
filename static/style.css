@@ -464,7 +464,7 @@ header p {
     top: 100%;
     left: 50%;
     transform: translateX(-50%);
-    margin-top: 10px;
+    margin-top: -2px;
     background: white;
     border-radius: 12px;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
@@ -478,7 +478,19 @@ header p {
     animation: slideDown 0.3s ease;
 }
 
-.world-status-dropdown:hover .world-status-popup {
+/* Invisible bridge between button and popup */
+.world-status-popup::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    height: 10px;
+    background: transparent;
+}
+
+.world-status-dropdown:hover .world-status-popup,
+.world-status-popup:hover {
     display: block;
 }
 
