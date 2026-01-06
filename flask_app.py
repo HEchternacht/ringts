@@ -395,15 +395,13 @@ class Database:
             new_exps = []
             exps_updates = {}  # name -> updates dict
             deltas_updates = {}  # (name, time) -> deltaexp
-            
-            # Free memory from temporary structures
-            del df
 
             # Process each player
             for row in df.itertuples(index=False):
                 name = row.name
                 exp = int(row.exp)
-                last_update = row.last_update
+                # Column 'last update' has a space, access with getattr or position
+                last_update = getattr(row, 'last_update', getattr(row, '_2', None))
                 world = getattr(row, 'world', DEFAULT_WORLD)
                 guild = getattr(row, 'guild', DEFAULT_GUILD)
 
@@ -478,6 +476,9 @@ class Database:
                         })
                     else:
                         log_console(f"Skipping first delta after reset for new player {name}: {exp} ({world} - {guild})", "INFO")
+            
+            # Free df after processing all rows
+            del df
             
             # Apply updates efficiently
             for name, updates in exps_updates.items():
@@ -2089,7 +2090,8 @@ def get_deltas():
         # Build delta list with calculated previous update times
         deltas = []
         for row in recent_deltas.itertuples(index=False):
-            current_time = row.update_time
+            # Column 'update time' has space, use index position or getattr
+            current_time = getattr(row, 'update_time', row[2])  # 'update time' is 3rd column
             prev_update_time = prev_time_map.get(current_time, current_time)
 
             deltas.append({
@@ -2358,7 +2360,8 @@ def get_vip_deltas():
         # Build delta list with calculated previous update times using itertuples
         deltas = []
         for row in recent_deltas.itertuples(index=False):
-            current_time = row.update_time
+            # Access columns by position since some have underscores
+            current_time = row[5]  # update_time is 6th column
             prev_update_time = prev_time_map.get(current_time, current_time)
             
             deltas.append({
