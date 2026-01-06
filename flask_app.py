@@ -32,7 +32,7 @@ TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
 
-FORCE_PROXY=True if os.environ.get('FORCE_PROXY', None).lower() == 'true' else False
+FORCE_PROXY=True if os.environ.get('FORCE_PROXY', None) == 'true' else False
 
 # Error Handlers
 @app.errorhandler(400)
@@ -135,8 +135,8 @@ def get_multiple(url: str, proxies: list):
                 
                 # Return both status and content so we can check it
                 return {
+                    "object":response,
                     'status_code': response.status_code,
-                    'content': response.text,
                     'proxy': proxy,
                     'time': toc_req-tic_req
                 }
@@ -168,9 +168,8 @@ def get_multiple(url: str, proxies: list):
                     
                     # Signal all other threads to stop
                     success_flag.set()
-                    
                     # Return IMMEDIATELY - don't wait for anything
-                    return result
+                    return result['object']
                     
             except TimeoutError:
                 pass

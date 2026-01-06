@@ -1138,6 +1138,14 @@ async function loadPlayerDetails(playerName, context = 'modal') {
     const loadingEl = document.getElementById(loadingId);
     const contentEl = document.getElementById(contentId);
     
+    // Check cache first
+    if (playerDetailsCache[playerName]) {
+        contentEl.innerHTML = playerDetailsCache[playerName].html;
+        contentEl.style.display = 'block';
+        loadingEl.style.display = 'none';
+        return playerDetailsCache[playerName].multiGraphData;
+    }
+    
     // Clear old content immediately
     contentEl.innerHTML = '';
     loadingEl.style.display = 'flex';
@@ -1148,8 +1156,17 @@ async function loadPlayerDetails(playerName, context = 'modal') {
         const data = await response.json();
         
         if (data.success && data.tables.length > 0) {
-            contentEl.innerHTML = renderPlayerDetails(data, context);
+            const html = renderPlayerDetails(data, context);
+            contentEl.innerHTML = html;
             contentEl.style.display = 'block';
+            
+            // Cache the data
+            playerDetailsCache[playerName] = {
+                html: html,
+                multiGraphData: data
+            };
+            
+            return data;
         } else {
             contentEl.innerHTML = '<p class="no-data">No detailed data available for this player.</p>';
             contentEl.style.display = 'block';
@@ -1659,11 +1676,27 @@ async function loadPlayerDetailsForMultiGraph(playerName) {
     const multiGraphDiv = document.getElementById('modalMultiGraphDiv');
     const multiGraphLoading = document.getElementById('multiGraphLoading');
     
+    // Check cache first
+    if (playerDetailsCache[playerName] && playerDetailsCache[playerName].multiGraphData) {
+        const data = playerDetailsCache[playerName].multiGraphData;
+        if (data.success && data.tables.length > 0) {
+            renderCombinedOverview(data, 'modalMultiGraphDiv', playerName);
+        }
+        if (multiGraphLoading) multiGraphLoading.style.display = 'none';
+        return;
+    }
+    
     if (multiGraphLoading) multiGraphLoading.style.display = 'flex';
     
     try {
         const response = await fetch(`/api/player-details/${encodeURIComponent(playerName)}`);
         const data = await response.json();
+        
+        // Cache the data
+        if (!playerDetailsCache[playerName]) {
+            playerDetailsCache[playerName] = {};
+        }
+        playerDetailsCache[playerName].multiGraphData = data;
         
         if (data.success && data.tables.length > 0) {
             renderCombinedOverview(data, 'modalMultiGraphDiv', playerName);
@@ -1683,7 +1716,15 @@ window.switchModalMainTab = switchModalMainTab;
 window.switchDashboardMainTab = switchDashboardMainTab;
 
 function closePlayerModal() {
-    document.getElementById('playerModal').classList.remove('active');
+    const modal = document.getElementById('playerModal');
+    modal.classList.remove('active');
+    
+    // Clear cache when modal closes to ensure fresh data next time
+    const modalPlayerName = document.getElementById('modalPlayerName').textContent;
+    const playerName = modalPlayerName.replace('📊 ', '').replace(' - EXP History', '').trim();
+    if (playerName && playerDetailsCache[playerName]) {
+        delete playerDetailsCache[playerName];
+    }
 }
 
 // Close modal on outside click
