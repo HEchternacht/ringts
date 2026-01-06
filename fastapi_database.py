@@ -12,7 +12,7 @@ import pandas as pd
 # Configuration from environment variables
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
@@ -26,6 +26,8 @@ class Database:
     def __init__(self, folder=None, log_func=None):
         if folder is None:
             folder = DATA_FOLDER
+        self.data_folder = folder
+        self.timezone_offset_hours = TIMEZONE_OFFSET_HOURS
         self.folder = folder
         self.exps_file = f"{folder}/exps.csv"
         self.deltas_file = f"{folder}/deltas.csv"

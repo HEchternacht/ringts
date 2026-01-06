@@ -2,7 +2,7 @@
 Background task functions for scraping rankings.
 """
 import time
-import threading
+import multiprocessing
 import traceback
 import gc
 from datetime import datetime
@@ -12,18 +12,30 @@ from fastapi_scraper import get_last_status_updates, get_ranking, parse_to_db_fo
 from fastapi_vip import scrape_vip_data
 
 
-# Scraper state
-scraper_running = False
-scraper_state = "idle"  # idle, checking, scraping, sleeping
-scraper_lock = threading.Lock()
-last_status_check = None
+# Scraper state - using Manager for cross-process shared state
+_manager = None
+_scraper_process = None
+scraper_state_dict = None  # Will be initialized with Manager.dict()
+
+
+def _get_manager():
+    """Get or create the multiprocessing manager"""
+    global _manager, scraper_state_dict
+    if _manager is None:
+        _manager = multiprocessing.Manager()
+        scraper_state_dict = _manager.dict()
+        scraper_state_dict['running'] = False
+        scraper_state_dict['state'] = 'idle'
+        scraper_state_dict['last_status_check'] = None
+    return _manager
 
 
 def loop_get_rankings(database, debug=False):
     """Background loop to continuously fetch rankings from all configured worlds and guilds"""
     database.load()
-    global scraper_running, scraper_state
-    scraper_running = True
+    
+    _get_manager()  # Initialize manager in this process
+    scraper_state_dict['running'] = True
     
     # Track last update per world (worlds update independently)
     last_updates = {}
@@ -33,18 +45,16 @@ def loop_get_rankings(database, debug=False):
     log_console(f"Starting ranking scraper for {len(scraping_config)} world(s)")
     
     ignore_updates = []
-    while scraper_running:
+    while scraper_state_dict['running']:
         try:
-            with scraper_lock:
-                scraper_state = "checking"
+            scraper_state_dict['state'] = "checking"
             
             # Get status data for all worlds to check what's available
             all_status = get_last_status_updates()
             
             if not all_status:
                 log_console("Failed to get status data, retrying...", "WARNING")
-                with scraper_lock:
-                    scraper_state = "sleeping"
+                scraper_state_dict['state'] = "sleeping"
                 time.sleep(60)
                 continue
             
@@ -107,13 +117,11 @@ def loop_get_rankings(database, debug=False):
             if not worlds_to_scrape:
                 if debug:
                     log_console("No new updates found for any world, sleeping 60s", "DEBUG")
-                with scraper_lock:
-                    scraper_state = "sleeping"
+                scraper_state_dict['state'] = "sleeping"
                 time.sleep(60)
             else:
                 # Process EACH WORLD separately with its own timestamp
-                with scraper_lock:
-                    scraper_state = "scraping"
+                scraper_state_dict['state'] = "scraping"
                 
                 worlds_updated = 0
                 for item in worlds_to_scrape:
@@ -177,47 +185,110 @@ def loop_get_rankings(database, debug=False):
                 else:
                     log_console("No worlds were updated", "WARNING")
                 
-                with scraper_lock:
-                    scraper_state = "idle"
+                scraper_state_dict['state'] = "idle"
         except Exception as e:
             log_console(f"Error in scraper: {str(e)}", "ERROR")
             traceback.print_exc()
-            with scraper_lock:
-                scraper_state = "sleeping"
+            scraper_state_dict['state'] = "sleeping"
             time.sleep(10)  # Wait before retry
 
 
-def start_scraper_thread(database):
-    """Start the scraper in a background thread with auto-restart"""
+def _scraper_worker(database_config):
+    """Worker function to run in separate process"""
+    # Recreate database instance in this process
+    from fastapi_database import Database
+    database = Database(**database_config)
+    
     def run_with_restart():
         while True:
             try:
-                log_console("Starting scraper thread...")
+                log_console("Starting scraper process...")
                 loop_get_rankings(database, debug=True)
             except Exception as e:
                 log_console(f"Scraper crashed: {str(e)}. Restarting in 1s...", "ERROR")
                 time.sleep(1)
+    
+    run_with_restart()
 
-    thread = threading.Thread(target=run_with_restart, daemon=True)
-    thread.start()
-    log_console("Scraper thread started with auto-restart enabled")
+
+def start_scraper_process(database):
+    """Start the scraper in a background process with auto-restart"""
+    global _scraper_process
+    
+    _get_manager()  # Initialize manager
+    
+    # Stop existing process if running
+    if _scraper_process is not None and _scraper_process.is_alive():
+        log_console("Stopping existing scraper process...")
+        scraper_state_dict['running'] = False
+        _scraper_process.terminate()
+        _scraper_process.join(timeout=5)
+        if _scraper_process.is_alive():
+            _scraper_process.kill()
+            _scraper_process.join()
+    
+    # Extract database configuration to pass to subprocess
+    database_config = {
+        'data_folder': database.data_folder,
+        'timezone_offset_hours': database.timezone_offset_hours,
+        'daily_reset_hour': database.daily_reset_hour,
+        'daily_reset_minute': database.daily_reset_minute
+    }
+    
+    # Start new process
+    _scraper_process = multiprocessing.Process(
+        target=_scraper_worker,
+        args=(database_config,),
+        daemon=True
+    )
+    _scraper_process.start()
+    log_console(f"Scraper process started with PID {_scraper_process.pid}")
+
+
+def stop_scraper_process():
+    """Stop the scraper process gracefully"""
+    global _scraper_process
+    
+    if _scraper_process is None:
+        return
+    
+    _get_manager()
+    scraper_state_dict['running'] = False
+    
+    if _scraper_process.is_alive():
+        log_console("Stopping scraper process...")
+        _scraper_process.terminate()
+        _scraper_process.join(timeout=5)
+        
+        if _scraper_process.is_alive():
+            log_console("Force killing scraper process...")
+            _scraper_process.kill()
+            _scraper_process.join()
+        
+        log_console("Scraper process stopped")
+    
+    _scraper_process = None
 
 
 def get_scraper_status():
     """Get current scraper status"""
-    global last_status_check, scraper_running, scraper_state
-    
     from datetime import timedelta
     import os
     TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
     
-    last_status_check = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+    _get_manager()
     
-    with scraper_lock:
-        state = scraper_state
+    last_check = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+    scraper_state_dict['last_status_check'] = last_check.isoformat()
+    
+    # Check if process is actually alive
+    global _scraper_process
+    is_alive = _scraper_process is not None and _scraper_process.is_alive()
     
     return {
-        'running': scraper_running,
-        'state': state,
-        'last_check': last_status_check.isoformat()
+        'running': scraper_state_dict.get('running', False) and is_alive,
+        'state': scraper_state_dict.get('state', 'idle'),
+        'last_check': scraper_state_dict.get('last_status_check', last_check.isoformat()),
+        'process_alive': is_alive,
+        'pid': _scraper_process.pid if is_alive else None
     }

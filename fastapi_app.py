@@ -33,7 +33,7 @@ from fastapi_vip import scrape_single_vip
 from fastapi_analytics import (
     get_delta_between, create_interactive_graph, get_player_stats
 )
-from fastapi_background import start_scraper_thread, get_scraper_status, scraper_lock, scraper_state
+from fastapi_background import start_scraper_process, stop_scraper_process, get_scraper_status
 
 
 # Configuration from environment variables
@@ -86,12 +86,28 @@ templates.env.globals['url_for'] = url_for
 
 
 # Initialize database
-db = Database(log_func=log_console)
+
+# Configuration from environment variables
+DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
+DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
+TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
+DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
+DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
+
+db = Database(folder=DATA_FOLDER, log_func=log_console)
 db.load()
 
 
 # Start background scraper
-start_scraper_thread(db)
+start_scraper_process(db)
+
+
+# Shutdown handler to stop scraper process cleanly
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop the scraper process on application shutdown"""
+    stop_scraper_process()
 
 
 # Error Handlers
