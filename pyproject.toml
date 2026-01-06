@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "asgiref>=3.11.0",
     "beautifulsoup4>=4.14.3",
     "flask>=3.1.2",
+    "gunicorn>=23.0.0",
     "httpx>=0.28.1",
     "joblib>=1.5.3",
     "matplotlib>=3.10.8",
@@ -17,4 +19,5 @@ dependencies = [
     "requests>=2.32.5",
     "sqlalchemy>=2.0.45",
     "uvicorn>=0.40.0",
+    "uwsgi==2.0.31"
 ]

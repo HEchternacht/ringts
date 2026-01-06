@@ -215,22 +215,41 @@
         // Close modal function
         function closePlayerModal() {
             const modal = document.getElementById('playerModal');
-            modal.style.display = 'none';
+            
+            // Remove active class to close modal (same as main app.js)
+            modal.classList.remove('active');
             
             // Clear modal content for fresh load next time
             const modalGraphDiv = document.getElementById('modalGraphDiv');
             const modalMultiGraphDiv = document.getElementById('modalMultiGraphDiv');
             const playerDetailsContent = document.getElementById('playerDetailsContent');
             
-            if (modalGraphDiv) modalGraphDiv.innerHTML = '';
-            if (modalMultiGraphDiv) modalMultiGraphDiv.innerHTML = '';
+            // Purge Plotly graphs properly
+            if (modalGraphDiv) {
+                if (modalGraphDiv.data) {
+                    Plotly.purge(modalGraphDiv);
+                }
+                modalGraphDiv.innerHTML = '';
+            }
+            if (modalMultiGraphDiv) {
+                if (modalMultiGraphDiv.data) {
+                    Plotly.purge(modalMultiGraphDiv);
+                }
+                modalMultiGraphDiv.innerHTML = '';
+            }
             if (playerDetailsContent) {
                 playerDetailsContent.innerHTML = '';
                 playerDetailsContent.style.display = 'none';
             }
+            
+            // Clear cache for this player (same as main app.js)
+            const playerName = modal.dataset.playerName;
+            if (playerName && typeof playerDetailsCache !== 'undefined' && playerDetailsCache[playerName]) {
+                delete playerDetailsCache[playerName];
+            }
         }
 
-        // Override switchModalMainTab for VIP page
+        // Override switchModalMainTab for VIP page - use same logic as app.js
         function switchModalMainTab(tabName) {
             // Update tab buttons
             document.querySelectorAll('.modal-main-tab-btn').forEach(btn => {
@@ -244,7 +263,7 @@
             });
             document.getElementById(`modal-${tabName}`).classList.add('active');
             
-            // Get player name from modal data attribute
+            // Get player name from modal data attribute (same as main app.js)
             const modal = document.getElementById('playerModal');
             const playerName = modal.dataset.playerName;
             
@@ -253,43 +272,28 @@
                 return;
             }
             
-            // Load data based on tab
+            console.log('Switching to tab:', tabName, 'for player:', playerName);
+            
+            // If switching to multi-graph tab, ensure data is loaded and rendered
             if (tabName === 'multi-graph') {
                 const multiGraphDiv = document.getElementById('modalMultiGraphDiv');
                 const multiGraphLoading = document.getElementById('multiGraphLoading');
                 
-                // Check if already rendered
-                if (multiGraphDiv && multiGraphDiv.children.length > 0) {
-                    console.log('Multi-graph already loaded, skipping');
-                    return;
-                }
-                
-                // Use app.js function if available
-                if (typeof loadPlayerDetailsForMultiGraph === 'function') {
-                    loadPlayerDetailsForMultiGraph(playerName);
-                } else {
-                    console.error('loadPlayerDetailsForMultiGraph not available');
+                // Check if multi-graph already has content
+                if (multiGraphDiv && !multiGraphDiv.hasChildNodes()) {
+                    // Data not yet rendered, trigger load
+                    if (typeof loadPlayerDetailsForMultiGraph === 'function') {
+                        loadPlayerDetailsForMultiGraph(playerName);
+                    } else {
+                        console.error('loadPlayerDetailsForMultiGraph not available');
+                    }
                 }
             } else if (tabName === 'tables') {
-                const playerDetailsContent = document.getElementById('playerDetailsContent');
-                const playerDetailsLoading = document.getElementById('playerDetailsLoading');
-                
-                // Check if already loaded (has content and is visible or has innerHTML)
-                if (playerDetailsContent && playerDetailsContent.innerHTML.trim() !== '' && playerDetailsContent.style.display !== 'none') {
-                    console.log('Tables already loaded, skipping');
-                    playerDetailsLoading.style.display = 'none';
-                    playerDetailsContent.style.display = 'block';
-                    return;
-                }
-                
-                // Use app.js function if available
+                // Use app.js function if available (same as main page)
                 if (typeof loadPlayerDetails === 'function') {
                     loadPlayerDetails(playerName, 'modal');
                 } else {
                     console.error('loadPlayerDetails not available');
-                    playerDetailsContent.innerHTML = '<p class="error" style="padding: 20px; color: red;">Function not available</p>';
-                    playerDetailsContent.style.display = 'block';
-                    playerDetailsLoading.style.display = 'none';
                 }
             }
         }
@@ -300,6 +304,9 @@
             try {
                 const modal = document.getElementById('playerModal');
                 const modalTitle = document.getElementById('modalPlayerName');
+                const modalGraphDiv = document.getElementById('modalGraphDiv');
+                const modalMultiGraphDiv = document.getElementById('modalMultiGraphDiv');
+                const playerDetailsContent = document.getElementById('playerDetailsContent');
                 
                 if (!modal) {
                     console.error('Modal not found!');
@@ -307,13 +314,27 @@
                     return;
                 }
                 
-                // Store clean name and world as data attributes (without emoji)
+                // Clear previous player's data (same as main app.js)
+                if (modalGraphDiv && modalGraphDiv.data) {
+                    Plotly.purge(modalGraphDiv);
+                }
+                if (modalMultiGraphDiv) {
+                    modalMultiGraphDiv.innerHTML = '';
+                    if (modalMultiGraphDiv.data) {
+                        Plotly.purge(modalMultiGraphDiv);
+                    }
+                }
+                if (playerDetailsContent) {
+                    playerDetailsContent.innerHTML = '';
+                    playerDetailsContent.style.display = 'none';
+                }
+                
+                // Store player name as data attribute (same as main app.js)
                 modal.dataset.playerName = name;
                 modal.dataset.playerWorld = world;
                 
                 // Display in title
-                modalTitle.textContent = `${name} (${world})`;
-                modal.style.display = 'flex';
+                modalTitle.textContent = `🌟 ${name} (${world})`;
                 
                 // Manually switch to raw graph tab
                 document.querySelectorAll('.modal-main-tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -321,8 +342,14 @@
                 document.querySelector('.modal-main-tab-btn').classList.add('active');
                 document.getElementById('modal-raw-graph').classList.add('active');
                 
+                // Show modal
+                modal.classList.add('active');
+                
                 // Load VIP graph data
                 await loadVIPGraphData(name, world);
+                
+                // Preload player details for tables tab (same as main app.js)
+                await loadPlayerDetails(name, 'modal');
             } catch (error) {
                 console.error('Error in showVIPModal:', error);
                 showNotification(`❌ Error: ${error.message}`, 'error');
@@ -573,25 +600,26 @@
                     const graphData = JSON.parse(data.graph_exp);
                     Plotly.newPlot('vipGraph', graphData.data, graphData.layout, {responsive: true});
                     
-                    // Display stats
+                    // Display stats with null checks
+                    const stats = data.stats || {};
                     document.getElementById('vipStats').innerHTML = `
                         <h3>Statistics for ${name}</h3>
                         <div class="stat-row">
                             <div class="stat-item">
                                 <span class="stat-label">Total EXP</span>
-                                <span class="stat-value">${data.stats.total_exp.toLocaleString()}</span>
+                                <span class="stat-value">${(stats.total_exp || 0).toLocaleString()}</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-label">Average EXP</span>
-                                <span class="stat-value">${data.stats.avg_exp.toFixed(0)}</span>
+                                <span class="stat-value">${(stats.avg_exp || 0).toFixed(0)}</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-label">Max EXP</span>
-                                <span class="stat-value">${data.stats.max_exp.toLocaleString()}</span>
+                                <span class="stat-value">${(stats.max_exp || 0).toLocaleString()}</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-label">Updates</span>
-                                <span class="stat-value">${data.stats.updates}</span>
+                                <span class="stat-value">${stats.updates || 0}</span>
                             </div>
                         </div>
                     `;

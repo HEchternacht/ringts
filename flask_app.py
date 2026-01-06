@@ -28,6 +28,8 @@ gc.enable()
 
 app = Flask(__name__)
 
+# Wrap Flask app for ASGI compatibility with uvicorn
+
 # Configuration from environment variables
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')

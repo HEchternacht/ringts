@@ -1142,8 +1142,25 @@ async function loadPlayerDetails(playerName, context = 'modal') {
     const loadingEl = document.getElementById(loadingId);
     const contentEl = document.getElementById(contentId);
     
+    if (!loadingEl || !contentEl) {
+        console.error('Loading or content element not found', { loadingId, contentId });
+        return;
+    }
+    
+    // Validate playerName
+    if (!playerName || typeof playerName !== 'string') {
+        console.error('Invalid player name:', playerName);
+        contentEl.innerHTML = '<p class="error">Invalid player name</p>';
+        contentEl.style.display = 'block';
+        loadingEl.style.display = 'none';
+        return;
+    }
+    
+    console.log('Loading player details for:', playerName, 'context:', context);
+    
     // Check cache first
     if (playerDetailsCache[playerName]) {
+        console.log('Using cached data for:', playerName);
         contentEl.innerHTML = playerDetailsCache[playerName].html;
         contentEl.style.display = 'block';
         loadingEl.style.display = 'none';
@@ -1160,6 +1177,8 @@ async function loadPlayerDetails(playerName, context = 'modal') {
         const data = await response.json();
         
         if (data.success && data.tables.length > 0) {
+            // Ensure player_name is set in data
+            data.player_name = playerName;
             const html = renderPlayerDetails(data, context);
             contentEl.innerHTML = html;
             contentEl.style.display = 'block';
@@ -1176,6 +1195,7 @@ async function loadPlayerDetails(playerName, context = 'modal') {
             contentEl.style.display = 'block';
         }
     } catch (error) {
+        console.error('Error loading player details:', error);
         contentEl.innerHTML = `<p class="error">Failed to load player details: ${error.message}</p>`;
         contentEl.style.display = 'block';
     } finally {
@@ -1267,17 +1287,23 @@ function isXPTable(table) {
 }
 
 function renderTable(table) {
+    if (!table || !table.columns || !table.data) {
+        return '<div class="no-data">Invalid table data</div>';
+    }
+    
     let html = '<div class="detail-table-wrapper"><table class="detail-data-table">';
     html += '<thead><tr>';
     table.columns.forEach(col => {
-        html += `<th>${col}</th>`;
+        html += `<th>${col || 'N/A'}</th>`;
     });
     html += '</tr></thead><tbody>';
     
     table.data.forEach(row => {
         html += '<tr>';
         row.forEach(cell => {
-            html += `<td>${cell}</td>`;
+            // Handle undefined/null values
+            const cellValue = cell !== null && cell !== undefined ? cell : '-';
+            html += `<td>${cellValue}</td>`;
         });
         html += '</tr>';
     });
