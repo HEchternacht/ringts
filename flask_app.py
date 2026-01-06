@@ -27,7 +27,8 @@ app = Flask(__name__)
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
+#DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
@@ -208,6 +209,9 @@ class Database:
         self.reset_date_file = f"{folder}/last_reset.txt"
         self.status_data_file = f"{folder}/status_data.json"
         self.scraping_data_file = f"{folder}/scraping_data.json"
+        self.vips_file = f"{folder}/vips.txt"
+        self.vipsdata_file = f"{folder}/vipsdata.csv"
+        self.deltavip_file = f"{folder}/deltavip.csv"
         self.lock = threading.Lock()
         self.reset_done_today = False  # Flag to avoid multiple reset checks
         self.skip_next_deltas = False  # Flag to skip first delta after daily reset
@@ -218,6 +222,7 @@ class Database:
         
         # Initialize scraping config if it doesn't exist
         self._initialize_scraping_config()
+        self._initialize_vip_files()
     
     def _read_exps(self):
         """Read exps table from storage"""
@@ -555,7 +560,172 @@ class Database:
             self.reset_done_today = True  # Mark flag after successful reset
             self.skip_next_deltas = True  # Skip the first delta after reset
             log_console("Set skip_next_deltas flag - next update will skip recording deltas", "INFO")
+            
+            # Also reset VIP data
+            self._reset_vip_daily()
+            
             return True
+    
+    def _initialize_vip_files(self):
+        """Initialize VIP tracking files if they don't exist"""
+        # Initialize vips.txt
+        if not os.path.exists(self.vips_file):
+            with open(self.vips_file, 'w', encoding='utf-8') as f:
+                f.write("")
+            log_console("Created vips.txt", "INFO")
+        
+        # Initialize vipsdata.csv
+        if not os.path.exists(self.vipsdata_file):
+            df = pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
+            df.to_csv(self.vipsdata_file, index=False)
+            log_console("Created vipsdata.csv", "INFO")
+        
+        # Initialize deltavip.csv
+        if not os.path.exists(self.deltavip_file):
+            df = pd.DataFrame(columns=['name', 'world', 'date', 'delta_exp', 'delta_online', 'update_time'])
+            df.to_csv(self.deltavip_file, index=False)
+            log_console("Created deltavip.csv", "INFO")
+    
+    def get_vips(self):
+        """Get list of VIP players"""
+        with self.lock:
+            try:
+                with open(self.vips_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                vips = []
+                for line in lines:
+                    line = line.strip()
+                    if line and ',' in line:
+                        name, world = line.split(',', 1)
+                        vips.append({'name': name.strip(), 'world': world.strip()})
+                return vips
+            except FileNotFoundError:
+                return []
+    
+    def add_vip(self, name, world):
+        """Add a VIP player"""
+        with self.lock:
+            # Read VIPs directly to avoid nested lock
+            try:
+                with open(self.vips_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                vips = []
+                for line in lines:
+                    line = line.strip()
+                    if line and ',' in line:
+                        vip_name, vip_world = line.split(',', 1)
+                        vips.append({'name': vip_name.strip(), 'world': vip_world.strip()})
+            except FileNotFoundError:
+                vips = []
+            
+            # Check if already exists
+            for vip in vips:
+                if vip['name'] == name and vip['world'] == world:
+                    return False
+            # Add new VIP
+            with open(self.vips_file, 'a', encoding='utf-8') as f:
+                f.write(f"{name},{world}\n")
+            log_console(f"Added VIP: {name} ({world})", "SUCCESS")
+            return True
+    
+    def remove_vip(self, name, world):
+        """Remove a VIP player"""
+        with self.lock:
+            # Read VIPs directly to avoid nested lock
+            try:
+                with open(self.vips_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                vips = []
+                for line in lines:
+                    line = line.strip()
+                    if line and ',' in line:
+                        vip_name, vip_world = line.split(',', 1)
+                        vips.append({'name': vip_name.strip(), 'world': vip_world.strip()})
+            except FileNotFoundError:
+                vips = []
+            
+            new_vips = [v for v in vips if not (v['name'] == name and v['world'] == world)]
+            if len(new_vips) == len(vips):
+                return False
+            # Write back
+            with open(self.vips_file, 'w', encoding='utf-8') as f:
+                for vip in new_vips:
+                    f.write(f"{vip['name']},{vip['world']}\n")
+            log_console(f"Removed VIP: {name} ({world})", "SUCCESS")
+            return True
+    
+    def get_vipsdata(self):
+        """Get current VIP data"""
+        with self.lock:
+            try:
+                df = pd.read_csv(self.vipsdata_file)
+                return df
+            except (FileNotFoundError, pd.errors.EmptyDataError):
+                return pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
+    
+    def update_vipdata(self, name, world, today_exp, today_online):
+        """Update VIP today's data"""
+        with self.lock:
+            # Read VIP data directly to avoid nested lock
+            try:
+                df = pd.read_csv(self.vipsdata_file)
+            except (FileNotFoundError, pd.errors.EmptyDataError):
+                df = pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
+            
+            # Check if entry exists
+            mask = (df['name'] == name) & (df['world'] == world)
+            if mask.any():
+                df.loc[mask, 'today_exp'] = today_exp
+                df.loc[mask, 'today_online'] = today_online
+            else:
+                new_row = pd.DataFrame([{
+                    'name': name,
+                    'world': world,
+                    'today_exp': today_exp,
+                    'today_online': today_online
+                }])
+                df = pd.concat([df, new_row], ignore_index=True)
+            df.to_csv(self.vipsdata_file, index=False)
+    
+    def get_deltavip(self):
+        """Get VIP delta history"""
+        with self.lock:
+            try:
+                df = pd.read_csv(self.deltavip_file)
+                df['update_time'] = pd.to_datetime(df['update_time'])
+                return df
+            except (FileNotFoundError, pd.errors.EmptyDataError):
+                return pd.DataFrame(columns=['name', 'world', 'date', 'delta_exp', 'delta_online', 'update_time'])
+    
+    def add_vip_delta(self, name, world, date, delta_exp, delta_online, update_time):
+        """Add VIP delta record"""
+        with self.lock:
+            # Read VIP delta data directly to avoid nested lock
+            try:
+                df = pd.read_csv(self.deltavip_file)
+                df['update_time'] = pd.to_datetime(df['update_time'])
+            except (FileNotFoundError, pd.errors.EmptyDataError):
+                df = pd.DataFrame(columns=['name', 'world', 'date', 'delta_exp', 'delta_online', 'update_time'])
+            
+            new_row = pd.DataFrame([{
+                'name': name,
+                'world': world,
+                'date': date,
+                'delta_exp': delta_exp,
+                'delta_online': delta_online,
+                'update_time': update_time
+            }])
+            df = pd.concat([df, new_row], ignore_index=True)
+            df.to_csv(self.deltavip_file, index=False)
+            log_console(f"VIP delta: {name} ({world}) +{delta_exp} exp, +{delta_online} online", "INFO")
+    
+    def _reset_vip_daily(self):
+        """Reset VIP data at daily reset"""
+        with self.lock:
+            # Clear today's data
+            df = pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
+            df.to_csv(self.vipsdata_file, index=False)
+            log_console("Reset VIP daily data", "INFO")
 
 
 # Logging function
@@ -857,6 +1027,128 @@ def parse_to_db_formatted(df, last_update, world=None, guild=None):
     return new_df
 
 
+def parse_online_time_to_minutes(time_str):
+    """Parse online time string to total minutes
+    Examples: '6h 05m' -> 365, '7h 10m' -> 430, '50m' -> 50
+    """
+    if not time_str or time_str == "0:00":
+        return 0
+    
+    total_minutes = 0
+    time_str = time_str.strip()
+    
+    # Extract hours if present
+    if 'h' in time_str:
+        parts = time_str.split('h')
+        hours = int(parts[0].strip())
+        total_minutes += hours * 60
+        # Get remaining part after 'h'
+        remaining = parts[1].strip() if len(parts) > 1 else ""
+    else:
+        remaining = time_str
+    
+    # Extract minutes if present
+    if 'm' in remaining:
+        minutes_str = remaining.split('m')[0].strip()
+        if minutes_str:
+            minutes = int(minutes_str)
+            total_minutes += minutes
+    
+    return total_minutes
+
+
+def scrape_single_vip(database, name, world):
+    """Scrape a single VIP player and update their data"""
+    try:
+        result = scrape_player_data(name)
+        if result['success'] and result['tables']:
+            # Find the Raw XP table (table with "Raw XP no dia" column)
+            today_exp = 0
+            today_online = 0  # minutes
+            
+            for table in result['tables']:
+                columns = table['columns']
+                data = table['data']
+                
+                # Check for Raw XP table
+                if 'Raw XP no dia' in columns and data:
+                    idx = columns.index('Raw XP no dia')
+                    # Get the first row's value
+                    raw_value = data[0][idx] if len(data[0]) > idx else "0"
+                    # Remove formatting and convert
+                    today_exp = int(raw_value.replace(',', '').replace('.', ''))
+                
+                # Check for Online time table
+                if 'Online time' in columns and data:
+                    idx = columns.index('Online time')
+                    online_time_str = data[0][idx] if len(data[0]) > idx else "0:00"
+                    # Parse to minutes
+                    today_online = parse_online_time_to_minutes(online_time_str)
+            
+            # Get OLD values from vipsdata BEFORE updating
+            vipsdata = database.get_vipsdata()
+            existing_vip = vipsdata[(vipsdata['name'] == name) & (vipsdata['world'] == world)]
+            
+            if not existing_vip.empty:
+                # VIP exists - calculate delta from previous cumulative
+                old_exp = existing_vip['today_exp'].values[0]
+                old_online = existing_vip['today_online'].values[0]
+                delta_exp = today_exp - old_exp
+                delta_online = today_online - old_online
+                
+                # Only process if exp has changed
+                if delta_exp != 0:
+                    # Save delta (including online time change)
+                    now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                    today_date = now.strftime("%Y-%m-%d")
+                    database.add_vip_delta(name, world, today_date, delta_exp, delta_online, now)
+                    
+                    # Update VIP data with NEW values
+                    database.update_vipdata(name, world, today_exp, today_online)
+                    log_console(f"VIP {name} ({world}): {today_exp} exp, {today_online} min online", "INFO")
+                else:
+                    # Exp hasn't changed, skip update
+                    log_console(f"VIP {name} ({world}): No exp change, skipping update", "INFO")
+            else:
+                # First time tracking - create initial baseline with 0 delta
+                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                today_date = now.strftime("%Y-%m-%d")
+                database.add_vip_delta(name, world, today_date, 0, 0, now)
+                database.update_vipdata(name, world, today_exp, today_online)
+                log_console(f"VIP delta: {name} ({world}) +0 exp, +0 online (initial baseline)", "INFO")
+                log_console(f"VIP {name} ({world}): {today_exp} exp, {today_online} min online", "INFO")
+            
+            return True
+        else:
+            log_console(f"Failed to scrape VIP {name} ({world})", "WARNING")
+            return False
+    except Exception as e:
+        log_console(f"Error scraping VIP {name} ({world}): {str(e)}", "ERROR")
+        return False
+
+
+def scrape_vip_data(database, world):
+    """Scrape VIP player data for a specific world and update today's stats"""
+    vips = database.get_vips()
+    if not vips:
+        return
+    
+    # Filter VIPs for this world
+    world_vips = [v for v in vips if v['world'] == world]
+    if not world_vips:
+        return
+    
+    log_console(f"Scraping {len(world_vips)} VIP players for {world}...", "INFO")
+    for vip in world_vips:
+        scrape_single_vip(database, vip['name'], vip['world'])
+
+
+def process_vip_deltas(database, world, update_time):
+    """Process VIP data after world update - scraping handles delta calculation"""
+    # Simply trigger a scrape for this world's VIPs
+    scrape_vip_data(database, world)
+
+
 def loop_get_rankings(database, debug=False):
     """Background loop to continuously fetch rankings from all configured worlds and guilds"""
     database.load()
@@ -988,6 +1280,9 @@ def loop_get_rankings(database, debug=False):
                         database.update(combined_df, update_time)
                         database.save()
                         log_console(f"Updated {len(combined_df)} players for {world} at {update_time}", "SUCCESS")
+                        
+                        # Scrape VIP data for THIS specific world
+                        scrape_vip_data(database, world)
                         
                         # Mark this world as updated and add to ignore list
                         last_updates[world] = update_time
@@ -1209,6 +1504,7 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
     # Build traces with compressed data
     for idx, name in enumerate(names_list):
         color = theme_colors[idx % len(theme_colors)]
+        # Add bar trace
         fig.add_trace(go.Bar(
             x=compressed_times,
             y=compressed_data[name],
@@ -1218,6 +1514,17 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
             textposition='outside',
             textangle=0,
             hovertemplate='<b>%{x}</b><br>EXP: %{y:,.0f}<extra></extra>'
+        ))
+        
+        # Add smooth line connecting the tops of the bars
+        fig.add_trace(go.Scatter(
+            x=compressed_times,
+            y=compressed_data[name],
+            name=f'{name} (trend)',
+            mode='lines',
+            line=dict(color=color, width=2, shape='spline'),
+            showlegend=False,
+            hoverinfo='skip'
         ))
 
     fig.update_layout(
@@ -1626,9 +1933,60 @@ def get_player_graph(player_name):
 
 @app.route('/api/player-details/<player_name>', methods=['GET'])
 def get_player_details(player_name):
-    """Get detailed player data from rubinothings.com.br"""
+    """Get detailed player data from rubinothings.com.br and process VIP deltas if applicable"""
     try:
         player_data = scrape_player_data(player_name)
+        
+        # If scraping was successful and player is a VIP, update VIP data and calculate deltas
+        if player_data.get('success') and player_data.get('tables'):
+            vips = db.get_vips()
+            matching_vip = next((v for v in vips if v['name'] == player_name), None)
+            
+            if matching_vip:
+                # This is a VIP - process their data
+                world = matching_vip['world']
+                today_exp = 0
+                today_online = 0
+                
+                for table in player_data['tables']:
+                    columns = table['columns']
+                    data = table['data']
+                    
+                    # Check for Raw XP table
+                    if 'Raw XP no dia' in columns and data:
+                        idx = columns.index('Raw XP no dia')
+                        raw_value = data[0][idx] if len(data[0]) > idx else "0"
+                        today_exp = int(raw_value.replace(',', '').replace('.', ''))
+                    
+                    # Check for Online time table
+                    if 'Online time' in columns and data:
+                        idx = columns.index('Online time')
+                        online_time_str = data[0][idx] if len(data[0]) > idx else "0:00"
+                        today_online = parse_online_time_to_minutes(online_time_str)
+                
+                # Get OLD values from vipsdata BEFORE updating
+                vipsdata = db.get_vipsdata()
+                existing_vip = vipsdata[(vipsdata['name'] == player_name) & (vipsdata['world'] == world)]
+                
+                if not existing_vip.empty:
+                    # VIP exists - calculate delta from previous cumulative
+                    old_exp = existing_vip['today_exp'].values[0]
+                    old_online = existing_vip['today_online'].values[0]
+                    delta_exp = today_exp - old_exp
+                    delta_online = today_online - old_online
+                    
+                    # Only process if exp has changed
+                    if delta_exp != 0:
+                        now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                        today_date = now.strftime("%Y-%m-%d")
+                        db.add_vip_delta(player_name, world, today_date, delta_exp, delta_online, now)
+                        log_console(f"VIP delta processed via player-details: {player_name} +{delta_exp} exp, +{delta_online} online", "INFO")
+                        
+                        # Update VIP data with NEW values
+                        db.update_vipdata(player_name, world, today_exp, today_online)
+                
+                # Note: If exp hasn't changed, we don't update vipsdata or create delta
+        
         return jsonify(player_data)
     except Exception as e:
         log_console(f"Error getting player details for {player_name}: {str(e)}", "ERROR")
@@ -1838,6 +2196,352 @@ def manual_update():
             'message': f'Update failed: {error_msg}'
         }), 500
 
+
+@app.route('/vip')
+def vip_page():
+    """VIP tracking page"""
+    return render_template('vip.html')
+
+
+@app.route('/api/vip/list', methods=['GET'])
+def get_vip_list():
+    """Get list of VIP players"""
+    try:
+        vips = db.get_vips()
+        return jsonify({'vips': vips})
+    except Exception as e:
+        log_console(f"Error getting VIP list: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/vip/add', methods=['POST'])
+def add_vip():
+    """Add a VIP player and immediately scrape their data"""
+    try:
+        data = request.json
+        name = data.get('name')
+        world = data.get('world')
+        
+        if not name or not world:
+            return jsonify({'error': 'Name and world are required'}), 400
+        
+        success = db.add_vip(name, world)
+        if success:
+            # Immediately scrape the new VIP's data
+            log_console(f"Immediately scraping new VIP: {name} ({world})", "INFO")
+            scrape_single_vip(db, name, world)
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'VIP already exists'}), 400
+    except Exception as e:
+        log_console(f"Error adding VIP: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/vip/remove', methods=['POST'])
+def remove_vip():
+    """Remove a VIP player"""
+    try:
+        data = request.json
+        name = data.get('name')
+        world = data.get('world')
+        
+        if not name or not world:
+            return jsonify({'error': 'Name and world are required'}), 400
+        
+        success = db.remove_vip(name, world)
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'VIP not found'}), 404
+    except Exception as e:
+        log_console(f"Error removing VIP: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/vip/deltas', methods=['GET'])
+def get_vip_deltas():
+    """Get VIP delta history for live feed"""
+    try:
+        limit = request.args.get('limit', 100, type=int)
+        name = request.args.get('name')
+        world = request.args.get('world')
+        
+        deltavip = db.get_deltavip()
+        
+        if deltavip.empty:
+            return jsonify({'deltas': []})
+        
+        # Filter by name and world if provided
+        if name:
+            deltavip = deltavip[deltavip['name'] == name]
+        if world:
+            deltavip = deltavip[deltavip['world'] == world]
+        
+        if deltavip.empty:
+            return jsonify({'deltas': []})
+        
+        # Sort by update time descending and limit
+        recent_deltas = deltavip.sort_values('update_time', ascending=False).head(limit)
+        
+        # Get distinct update times for efficient lookup
+        distinct_times = sorted(deltavip['update_time'].unique())
+        distinct_times_list = list(distinct_times)
+        
+        # Create a mapping of update_time -> prev_update_time
+        prev_time_map = {}
+        for i, current_time in enumerate(distinct_times_list):
+            if i > 0:
+                prev_time_map[current_time] = distinct_times_list[i - 1]
+            else:
+                prev_time_map[current_time] = current_time
+        
+        # Build delta list with calculated previous update times
+        deltas = []
+        for idx, row in recent_deltas.iterrows():
+            current_time = row['update_time']
+            prev_update_time = prev_time_map.get(current_time, current_time)
+            
+            deltas.append({
+                'name': row['name'],
+                'world': row['world'],
+                'delta_exp': int(row['delta_exp']),
+                'delta_online': int(row['delta_online']),
+                'update_time': current_time.isoformat(),
+                'prev_update_time': prev_update_time.isoformat(),
+                'date': row['date']
+            })
+        
+        return jsonify({'deltas': deltas})
+    except Exception as e:
+        log_console(f"Error getting VIP deltas: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/vip/graph', methods=['POST'])
+def get_vip_graph():
+    """Generate combined VIP graph with exp (bars) and online time (line)"""
+    try:
+        data = request.json
+        name = data.get('name')
+        world = data.get('world')
+        
+        if not name or not world:
+            return jsonify({'error': 'Name and world are required'}), 400
+        
+        deltavip = db.get_deltavip()
+        vip_data = deltavip[(deltavip['name'] == name) & (deltavip['world'] == world)]
+        
+        if vip_data.empty:
+            return jsonify({'error': 'No data available for this VIP'}), 404
+        
+        # Sort by update time
+        vip_data = vip_data.sort_values('update_time')
+        
+        # Apply zero grouping logic (compress consecutive zeros)
+        all_update_times = vip_data['update_time'].tolist()
+        exp_values = vip_data['delta_exp'].tolist()
+        online_values = vip_data['delta_online'].tolist()
+        
+        # Identify positions where BOTH exp AND online are zero
+        all_zero_positions = []
+        for i in range(len(exp_values)):
+            if exp_values[i] == 0 and online_values[i] == 0:
+                all_zero_positions.append(i)
+        
+        # Group consecutive zero positions (only if there are 2+ consecutive zeros)
+        zero_groups = []
+        if all_zero_positions:
+            start = all_zero_positions[0]
+            for i in range(1, len(all_zero_positions)):
+                if all_zero_positions[i] != all_zero_positions[i-1] + 1:
+                    if all_zero_positions[i-1] - start >= 1:
+                        zero_groups.append((start, all_zero_positions[i-1]))
+                    start = all_zero_positions[i]
+            if all_zero_positions[-1] - start >= 1:
+                zero_groups.append((start, all_zero_positions[-1]))
+        
+        # Build compressed data
+        time_labels = []
+        compressed_exp = []
+        compressed_online = []
+        compressed_online_display = []  # For display with time diff labels
+        time_diffs = []  # Store time differences in minutes
+        
+        prev_date = None
+        prev_time = None
+        prev_timestamp = None
+        i = 0
+        while i < len(all_update_times):
+            # Check if this position starts a zero group
+            in_zero_group = False
+            for start, end in zero_groups:
+                if i == start:
+                    # Create label for zero period
+                    if start > 0:
+                        start_time = pd.to_datetime(all_update_times[start - 1])
+                    else:
+                        start_time = pd.to_datetime(all_update_times[start])
+                    end_time = pd.to_datetime(all_update_times[end])
+                    
+                    start_date = start_time.date()
+                    end_date = end_time.date()
+                    
+                    if start_date == end_date:
+                        if start_date != prev_date:
+                            label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%H:%M')}"
+                        else:
+                            label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%H:%M')}"
+                    else:
+                        if start_date != prev_date:
+                            label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
+                        else:
+                            label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
+                    
+                    time_labels.append(label)
+                    compressed_exp.append(0)
+                    compressed_online.append(0)
+                    compressed_online_display.append("0 / 0 min")
+                    time_diffs.append(0)
+                    prev_date = end_date
+                    prev_time = end_time
+                    prev_timestamp = end_time
+                    
+                    i = end + 1
+                    in_zero_group = True
+                    break
+            
+            if not in_zero_group:
+                time_obj = pd.to_datetime(all_update_times[i])
+                current_date = time_obj.date()
+                
+                # Calculate time difference from previous timestamp
+                if prev_timestamp is not None:
+                    time_diff_minutes = int((time_obj - prev_timestamp).total_seconds() / 60)
+                else:
+                    time_diff_minutes = 0
+                
+                if prev_time is None:
+                    if current_date != prev_date:
+                        time_str = time_obj.strftime('%d/%m/%Y %H:%M')
+                    else:
+                        time_str = time_obj.strftime('%H:%M')
+                else:
+                    start_date = prev_time.date()
+                    if start_date == current_date:
+                        if current_date != prev_date:
+                            time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%H:%M')}"
+                        else:
+                            time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%H:%M')}"
+                    else:
+                        if start_date != prev_date:
+                            time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                        else:
+                            time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                
+                time_labels.append(time_str)
+                compressed_exp.append(exp_values[i])
+                
+                # If online time is 0 but exp is not 0, use None for interpolation
+                online_val = online_values[i]
+                if online_val == 0 and exp_values[i] > 0:
+                    compressed_online.append(None)  # Will be interpolated by Plotly
+                else:
+                    compressed_online.append(online_val)
+                
+                # Create display label: "online / time_diff min"
+                display_label = f"{online_val} / {time_diff_minutes} min"
+                compressed_online_display.append(display_label)
+                time_diffs.append(time_diff_minutes)
+                
+                prev_date = current_date
+                prev_time = time_obj
+                prev_timestamp = time_obj
+                i += 1
+        
+        # Create combined graph with dual y-axes
+        fig = go.Figure()
+        
+        # Add EXP bars (left y-axis)
+        fig.add_trace(go.Bar(
+            x=time_labels,
+            y=compressed_exp,
+            name='EXP Gain',
+            marker_color='#C21500',
+            text=[str(int(exp)) if exp > 0 else '' for exp in compressed_exp],
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>EXP: %{y:,.0f}<extra></extra>',
+            yaxis='y'
+        ))
+        
+        # Add smooth line connecting the tops of the EXP bars
+        fig.add_trace(go.Scatter(
+            x=time_labels,
+            y=compressed_exp,
+            name='EXP Trend',
+            mode='lines',
+            line=dict(color='#C21500', width=2, shape='spline'),
+            showlegend=False,
+            hoverinfo='skip',
+            yaxis='y'
+        ))
+        
+        # Add Online Time line (right y-axis)
+        fig.add_trace(go.Scatter(
+            x=time_labels,
+            y=compressed_online,
+            name='Online Time (min)',
+            mode='lines+markers',
+            line=dict(color='#3498db', width=2, shape='spline'),  # Use spline for smooth interpolation
+            marker=dict(size=8, symbol='circle'),
+            text=compressed_online_display,
+            hovertemplate='<b>%{x}</b><br>%{text}<extra></extra>',
+            connectgaps=True,  # Connect gaps where None values exist (interpolation)
+            yaxis='y2'
+        ))
+        
+        # Update layout with dual y-axes
+        fig.update_layout(
+            title=f'🌟 {name} - VIP Stats ({world})',
+            xaxis_title='Update Time',
+            yaxis=dict(
+                title=dict(text='Delta EXP', font=dict(color='#C21500')),
+                tickfont=dict(color='#C21500')
+            ),
+            yaxis2=dict(
+                title=dict(text='Online Time (minutes)', font=dict(color='#3498db')),
+                tickfont=dict(color='#3498db'),
+                overlaying='y',
+                side='right'
+            ),
+            template='plotly_white',
+            height=500,
+            xaxis=dict(tickangle=-45),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            hovermode='x unified'
+        )
+        
+        return jsonify({
+            'success': True,
+            'graph_data': fig.to_json(),
+            'stats': {
+                'total_exp': int(vip_data['delta_exp'].sum()),
+                'avg_exp': float(vip_data['delta_exp'].mean()),
+                'max_exp': int(vip_data['delta_exp'].max()),
+                'total_online': int(vip_data['delta_online'].sum()),
+                'avg_online': float(vip_data['delta_online'].mean()),
+                'updates': len(vip_data)
+            }
+        })
+    except Exception as e:
+        log_console(f"Error generating VIP graph: {str(e)}", "ERROR")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 if __name__ == '__main__':

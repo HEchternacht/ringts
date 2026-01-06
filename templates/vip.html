@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VIP Player Tracking</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Live VIP Feed Sidebar -->
+        <div class="live-feed-sidebar" id="vipLiveFeed">
+            <div class="live-feed-header">
+                <h3>🌟 VIP Live Feed</h3>
+                <span class="live-indicator">LIVE</span>
+            </div>
+            <div class="live-feed-content" id="vipLiveFeedContent">
+                <div class="live-feed-placeholder">
+                    <p>Waiting for VIP updates...</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="main-content">
+        <nav class="main-nav">
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/vip" class="nav-link active">VIP Tracking</a>
+        </nav>
+
+        <header>
+            <h1>🌟 VIP Player Tracking</h1>
+            <p class="subtitle">Track your favorite players in real-time</p>
+        </header>
+
+        <div style="padding: 30px;">
+        <!-- VIP Management Section -->
+        <section class="section-card">
+            <h2>Manage VIPs</h2>
+            <div class="vip-form">
+                <input type="text" id="vipName" placeholder="Player Name" class="input-field">
+                <input type="text" id="vipWorld" placeholder="World" class="input-field">
+                <button id="addVIPBtn" class="btn btn-primary">Add VIP</button>
+            </div>
+            
+            <div id="vipList" class="vip-list"></div>
+        </section>
+        </div>
+
+        <!-- Player Modal (same as dashboard) -->
+        <div class="modal" id="playerModal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h2 id="modalPlayerName">Player Details</h2>
+                    <button class="modal-close" onclick="closePlayerModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <!-- Main Tabs -->
+                    <div class="modal-main-tabs">
+                        <button class="modal-main-tab-btn active" onclick="switchModalMainTab('raw-graph')">📊 Raw Graph</button>
+                        <button class="modal-main-tab-btn" onclick="switchModalMainTab('multi-graph')">📈 Multi-Graph</button>
+                        <button class="modal-main-tab-btn" onclick="switchModalMainTab('tables')">📋 Tables</button>
+                    </div>
+                    
+                    <!-- Tab Contents -->
+                    <div class="modal-tab-content active" id="modal-raw-graph">
+                        <div id="modalGraphDiv" style="width: 100%; height: 500px;"></div>
+                    </div>
+                    
+                    <div class="modal-tab-content" id="modal-multi-graph">
+                        <div class="loading-overlay" id="multiGraphLoading" style="display: none;">
+                            <div class="loading-spinner"></div>
+                            <p>Loading multi-graph...</p>
+                        </div>
+                        <div id="modalMultiGraphDiv" class="combined-overview-chart"></div>
+                    </div>
+                    
+                    <div class="modal-tab-content" id="modal-tables">
+                        <div class="loading-overlay" id="playerDetailsLoading">
+                            <div class="loading-spinner"></div>
+                            <p>Loading player details...</p>
+                        </div>
+                        <div id="playerDetailsContent" class="player-details-content" style="display: none;">
+                            <!-- Player details will be inserted here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        </div>
+        <!-- End main-content -->
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script>
+        let vipEventSource = null;
+        let vipDeltas = [];
+        let vipDeltasByDate = new Map();
+        let vipDeltaIds = new Set();
+
+        // Initialize app
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('VIP page loaded');
+            loadVIPList();
+            connectVIPStream();
+            
+            // Add button click listener
+            document.getElementById('addVIPBtn').addEventListener('click', addVIP);
+        });
+
+        // Load VIP list
+        async function loadVIPList() {
+            try {
+                const response = await fetch('/api/vip/list');
+                const data = await response.json();
+                
+                const vipListEl = document.getElementById('vipList');
+                
+                if (data.vips && data.vips.length > 0) {
+                    vipListEl.innerHTML = data.vips.map(vip => `
+                        <div class="vip-item">
+                            <div class="vip-info" onclick="showVIPModal('${vip.name.replace(/'/g, "\\'")}', '${vip.world}')" style="cursor: pointer; flex: 1;">
+                                <span class="vip-name" style="font-weight: 600; color: var(--accent-red);">🌟 ${vip.name}</span>
+                                <span class="vip-world" style="color: var(--text-muted);">${vip.world}</span>
+                            </div>
+                            <button onclick="event.stopPropagation(); removeVIP('${vip.name.replace(/'/g, "\\'")}'  , '${vip.world}')" class="btn btn-sm" style="background: var(--danger-color, #e74c3c); color: white; padding: 4px 12px; border-radius: 4px; border: none; cursor: pointer;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">Remove</button>
+                        </div>
+                    `).join('');
+                } else {
+                    vipListEl.innerHTML = '<p class="no-data">No VIPs added yet</p>';
+                }
+            } catch (error) {
+                console.error('Failed to load VIP list:', error);
+            }
+        }
+
+        // Add VIP
+        async function addVIP() {
+            console.log('Adding VIP...');
+            const name = document.getElementById('vipName').value.trim();
+            const world = document.getElementById('vipWorld').value.trim();
+            
+            console.log('Name:', name, 'World:', world);
+            
+            if (!name || !world) {
+                console.log('Validation failed');
+                showNotification('⚠️ Please enter both name and world', 'warning');
+                return;
+            }
+            
+            console.log('Sending request...');
+            const addBtn = document.getElementById('addVIPBtn');
+            addBtn.disabled = true;
+            addBtn.textContent = 'Adding...';
+            
+            try {
+                const response = await fetch('/api/vip/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, world })
+                });
+                
+                console.log('Response received:', response.status);
+                const data = await response.json();
+                console.log('Response data:', data);
+                
+                if (response.ok) {
+                    console.log('Success!');
+                    document.getElementById('vipName').value = '';
+                    document.getElementById('vipWorld').value = '';
+                    await loadVIPList();
+                    showNotification(`✅ VIP ${name} added successfully!`, 'success');
+                } else {
+                    console.log('Error response:', data);
+                    showNotification(`❌ ${data.error || 'Failed to add VIP'}`, 'error');
+                }
+            } catch (error) {
+                console.error('Fetch error:', error);
+                showNotification(`❌ Failed to add VIP: ${error.message}`, 'error');
+            } finally {
+                addBtn.disabled = false;
+                addBtn.textContent = 'Add VIP';
+            }
+        }
+
+        // Remove VIP
+        async function removeVIP(name, world) {
+            if (!confirm(`Remove ${name} (${world}) from VIP list?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/vip/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, world })
+                });
+                
+                if (response.ok) {
+                    loadVIPList();
+                    showNotification(`✅ VIP ${name} removed`, 'success');
+                } else {
+                    const data = await response.json();
+                    showNotification(`❌ ${data.error || 'Failed to remove VIP'}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`❌ Failed to remove VIP: ${error.message}`, 'error');
+            }
+        }
+
+        // VIP modal cache - use global playerDetailsCache if available
+        let vipModalCache = {};
+
+        // Close modal function
+        function closePlayerModal() {
+            const modal = document.getElementById('playerModal');
+            modal.style.display = 'none';
+            
+            // Clear modal content for fresh load next time
+            const modalGraphDiv = document.getElementById('modalGraphDiv');
+            const modalMultiGraphDiv = document.getElementById('modalMultiGraphDiv');
+            const playerDetailsContent = document.getElementById('playerDetailsContent');
+            
+            if (modalGraphDiv) modalGraphDiv.innerHTML = '';
+            if (modalMultiGraphDiv) modalMultiGraphDiv.innerHTML = '';
+            if (playerDetailsContent) {
+                playerDetailsContent.innerHTML = '';
+                playerDetailsContent.style.display = 'none';
+            }
+        }
+
+        // Override switchModalMainTab for VIP page
+        function switchModalMainTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.modal-main-tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Update tab content
+            document.querySelectorAll('.modal-tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById(`modal-${tabName}`).classList.add('active');
+            
+            // Get player name from modal data attribute
+            const modal = document.getElementById('playerModal');
+            const playerName = modal.dataset.playerName;
+            
+            if (!playerName) {
+                console.error('No player name found in modal dataset');
+                return;
+            }
+            
+            // Load data based on tab
+            if (tabName === 'multi-graph') {
+                const multiGraphDiv = document.getElementById('modalMultiGraphDiv');
+                const multiGraphLoading = document.getElementById('multiGraphLoading');
+                
+                // Check if already rendered
+                if (multiGraphDiv && multiGraphDiv.children.length > 0) {
+                    console.log('Multi-graph already loaded, skipping');
+                    return;
+                }
+                
+                // Use app.js function if available
+                if (typeof loadPlayerDetailsForMultiGraph === 'function') {
+                    loadPlayerDetailsForMultiGraph(playerName);
+                } else {
+                    console.error('loadPlayerDetailsForMultiGraph not available');
+                }
+            } else if (tabName === 'tables') {
+                const playerDetailsContent = document.getElementById('playerDetailsContent');
+                const playerDetailsLoading = document.getElementById('playerDetailsLoading');
+                
+                // Check if already loaded (has content and is visible or has innerHTML)
+                if (playerDetailsContent && playerDetailsContent.innerHTML.trim() !== '' && playerDetailsContent.style.display !== 'none') {
+                    console.log('Tables already loaded, skipping');
+                    playerDetailsLoading.style.display = 'none';
+                    playerDetailsContent.style.display = 'block';
+                    return;
+                }
+                
+                // Use app.js function if available
+                if (typeof loadPlayerDetails === 'function') {
+                    loadPlayerDetails(playerName, 'modal');
+                } else {
+                    console.error('loadPlayerDetails not available');
+                    playerDetailsContent.innerHTML = '<p class="error" style="padding: 20px; color: red;">Function not available</p>';
+                    playerDetailsContent.style.display = 'block';
+                    playerDetailsLoading.style.display = 'none';
+                }
+            }
+        }
+
+        // Show VIP modal with data
+        async function showVIPModal(name, world) {
+            console.log('showVIPModal called for:', name, world);
+            try {
+                const modal = document.getElementById('playerModal');
+                const modalTitle = document.getElementById('modalPlayerName');
+                
+                if (!modal) {
+                    console.error('Modal not found!');
+                    showNotification('❌ Modal element not found', 'error');
+                    return;
+                }
+                
+                // Store clean name and world as data attributes (without emoji)
+                modal.dataset.playerName = name;
+                modal.dataset.playerWorld = world;
+                
+                // Display in title
+                modalTitle.textContent = `${name} (${world})`;
+                modal.style.display = 'flex';
+                
+                // Manually switch to raw graph tab
+                document.querySelectorAll('.modal-main-tab-btn').forEach(btn => btn.classList.remove('active'));
+                document.querySelectorAll('.modal-tab-content').forEach(content => content.classList.remove('active'));
+                document.querySelector('.modal-main-tab-btn').classList.add('active');
+                document.getElementById('modal-raw-graph').classList.add('active');
+                
+                // Load VIP graph data
+                await loadVIPGraphData(name, world);
+            } catch (error) {
+                console.error('Error in showVIPModal:', error);
+                showNotification(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Load VIP graph data (exp + online time)
+        async function loadVIPGraphData(name, world) {
+            console.log('Loading VIP graph for:', name, world);
+            const graphDiv = document.getElementById('modalGraphDiv');
+            
+            if (!graphDiv) {
+                console.error('Graph div not found!');
+                return;
+            }
+            
+            // Show loading with proper structure
+            graphDiv.innerHTML = '<div style="display: flex; justify-content: center; align-items: center; height: 100%;"><div class="loading-spinner"></div></div>';
+            
+            try {
+                const response = await fetch('/api/vip/graph', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, world })
+                });
+                
+                console.log('Graph API response status:', response.status);
+                const data = await response.json();
+                console.log('Graph API data:', data);
+                
+                if (data.success) {
+                    // Clear loading and create combined graph
+                    graphDiv.innerHTML = '';
+                    const graphData = JSON.parse(data.graph_data);
+                    Plotly.newPlot('modalGraphDiv', graphData.data, graphData.layout);
+                } else {
+                    graphDiv.innerHTML = `<p class="error" style="color: red; padding: 20px;">${data.error || 'Failed to load graph'}</p>`;
+                    console.error('Graph loading failed:', data.error);
+                }
+            } catch (error) {
+                console.error('Error loading VIP graph:', error);
+                graphDiv.innerHTML = `<p class="error" style="color: red; padding: 20px;">Error loading graph: ${error.message}</p>`;
+            }
+        }
+
+        // Notification function (reuse from app.js if available, or define here)
+        function showNotification(message, type = 'info') {
+            // Try to use global function from app.js if available
+            if (typeof window.showNotification === 'function') {
+                window.showNotification(message, type);
+                return;
+            }
+            
+            // Fallback: simple notification
+            const notification = document.createElement('div');
+            notification.className = `notification notification-${type}`;
+            notification.textContent = message;
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 15px 20px;
+                background: ${type === 'success' ? '#2ecc71' : type === 'error' ? '#e74c3c' : '#f39c12'};
+                color: white;
+                border-radius: 4px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                z-index: 10000;
+                animation: slideIn 0.3s ease;
+            `;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+
+        // Connect to VIP delta stream (using polling like main dashboard)
+        async function connectVIPStream() {
+            await loadVIPDeltas(); // Initial load
+            setInterval(loadVIPDeltas, 60000); // Poll every 1 minute
+        }
+
+        // Load VIP deltas via polling
+        async function loadVIPDeltas() {
+            try {
+                const response = await fetch('/api/vip/deltas');
+                const data = await response.json();
+                
+                if (data.deltas && data.deltas.length > 0) {
+                    // Process deltas
+                    data.deltas.forEach(delta => {
+                        addVIPDeltaToFeed(delta);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading VIP deltas:', error);
+            }
+        }
+
+        // Add VIP delta to live feed (using dashboard style)
+        function addVIPDeltaToFeed(delta) {
+            // Skip if delta exp is zero
+            if (delta.delta_exp === 0) {
+                return;
+            }
+            
+            const deltaId = `${delta.name}_${delta.update_time}_${delta.deltaexp}`;
+            
+            // Check for duplicates
+            if (vipDeltaIds.has(deltaId)) {
+                return;
+            }
+            vipDeltaIds.add(deltaId);
+            
+            const deltaDate = new Date(delta.update_time);
+            const prevDate = new Date(delta.prev_update_time);
+            
+            // Create time range key for grouping
+            const prevTimeStr = prevDate.toLocaleString('en-US', { 
+                month: 'short', 
+                day: 'numeric', 
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            const currentTimeStr = deltaDate.toLocaleString('en-US', { 
+                month: 'short', 
+                day: 'numeric', 
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            const dateTimeKey = prevTimeStr === currentTimeStr 
+                ? currentTimeStr 
+                : `${prevTimeStr} → ${currentTimeStr}`;
+            
+            // Initialize datetime group if needed
+            if (!vipDeltasByDate.has(dateTimeKey)) {
+                vipDeltasByDate.set(dateTimeKey, []);
+            }
+            
+            // Add delta to array
+            vipDeltasByDate.get(dateTimeKey).push({
+                name: delta.name,
+                world: delta.world,
+                deltaexp: delta.delta_exp,
+                deltaonline: delta.delta_online,
+                update_time: delta.update_time,
+                prev_update_time: delta.prev_update_time || delta.update_time,
+                timestamp: deltaDate.getTime(),
+                id: deltaId
+            });
+            
+            // Sort deltas by exp descending
+            vipDeltasByDate.get(dateTimeKey).sort((a, b) => b.deltaexp - a.deltaexp);
+            
+            // Rebuild the feed
+            renderVIPDeltaFeed();
+            
+            // Highlight new items briefly
+            setTimeout(() => {
+                const items = document.getElementById('vipLiveFeedContent').querySelectorAll('.delta-item.new');
+                items.forEach(item => item.classList.remove('new'));
+            }, 3000);
+        }
+
+        function renderVIPDeltaFeed() {
+            const feedContent = document.getElementById('vipLiveFeedContent');
+            
+            // Sort datetime keys descending
+            const sortedDateTimes = Array.from(vipDeltasByDate.keys()).sort((a, b) => {
+                const aDeltas = vipDeltasByDate.get(a);
+                const bDeltas = vipDeltasByDate.get(b);
+                const aTime = aDeltas.length > 0 ? aDeltas[0].timestamp : 0;
+                const bTime = bDeltas.length > 0 ? bDeltas[0].timestamp : 0;
+                return bTime - aTime;
+            });
+            
+            let html = '';
+            
+            for (const dateTimeKey of sortedDateTimes) {
+                const deltas = vipDeltasByDate.get(dateTimeKey);
+                
+                html += `<div class="delta-date-group">`;
+                html += `<div class="delta-date-header">${dateTimeKey}</div>`;
+                
+                for (const delta of deltas) {
+                    const currentTime = new Date(delta.update_time).toLocaleTimeString('en-US', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                    });
+                    
+                    const prevTime = new Date(delta.prev_update_time).toLocaleTimeString('en-US', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                    });
+                    
+                    const timeRange = prevTime === currentTime ? currentTime : `${prevTime} → ${currentTime}`;
+                    
+                    html += `
+                        <div class="delta-item new" onclick="showVIPModal('${delta.name.replace(/'/g, "\\'")}', '${delta.world}')"
+                             style="cursor: pointer;">
+                            <div class="delta-player-name">${delta.name}</div>
+                            <div class="delta-exp-value">
+                                <span class="plus">+</span>${formatNumber(delta.deltaexp)} EXP
+                            </div>
+                            <div class="delta-time">${timeRange}</div>
+                        </div>
+                    `;
+                }
+                
+                html += `</div>`;
+            }
+            
+            feedContent.innerHTML = html || '<div class="live-feed-placeholder"><p>Waiting for VIP updates...</p></div>';
+        }
+
+        // Format number helper
+        function formatNumber(num) {
+            return num.toLocaleString();
+        }
+
+        // Load VIP graph
+        async function loadVIPGraph() {
+            const selected = document.getElementById('selectedVIP').value;
+            if (!selected) {
+                alert('Please select a VIP');
+                return;
+            }
+            
+            const [name, world] = selected.split('|');
+            
+            try {
+                const response = await fetch('/api/vip/graph', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, world })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    const graphData = JSON.parse(data.graph_exp);
+                    Plotly.newPlot('vipGraph', graphData.data, graphData.layout, {responsive: true});
+                    
+                    // Display stats
+                    document.getElementById('vipStats').innerHTML = `
+                        <h3>Statistics for ${name}</h3>
+                        <div class="stat-row">
+                            <div class="stat-item">
+                                <span class="stat-label">Total EXP</span>
+                                <span class="stat-value">${data.stats.total_exp.toLocaleString()}</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Average EXP</span>
+                                <span class="stat-value">${data.stats.avg_exp.toFixed(0)}</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Max EXP</span>
+                                <span class="stat-value">${data.stats.max_exp.toLocaleString()}</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Updates</span>
+                                <span class="stat-value">${data.stats.updates}</span>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    alert(data.error || 'Failed to load graph');
+                }
+            } catch (error) {
+                alert('Failed to load VIP graph: ' + error.message);
+            }
+        }
+    </script>
+
+    <style>
+        /* CSS Variables */
+        :root {
+            --primary-color: #C21500;
+            --secondary-color: #FFC500;
+            --bg-secondary: #f8f9fa;
+            --border-color: #dee2e6;
+            --text-primary: #333;
+            --text-secondary: #6c757d;
+        }
+        
+        .vip-form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .vip-form .input-field {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .vip-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .vip-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .vip-info {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .vip-name {
+            font-weight: bold;
+            color: var(--primary-color);
+            font-size: 1.1em;
+        }
+
+        .vip-world {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+        }
+
+        .vip-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+
+        .vip-selector select {
+            flex: 1;
+            max-width: 300px;
+        }
+
+        #vipGraphContainer {
+            margin-top: 20px;
+        }
+
+        .delta-feed {
+            max-height: 600px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .delta-item {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: 10px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            border-left: 4px solid var(--primary-color);
+            animation: slideIn 0.3s ease;
+        }
+
+        .delta-item.positive {
+            border-left-color: #4CAF50;
+        }
+
+        .delta-item.negative {
+            border-left-color: #f44336;
+        }
+
+        .delta-player {
+            font-weight: bold;
+        }
+
+        .delta-exp {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .delta-item.positive .delta-exp {
+            color: #4CAF50;
+        }
+
+        .delta-item.negative .delta-exp {
+            color: #f44336;
+        }
+
+        .delta-time {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .stats-card {
+            margin-top: 20px;
+            padding: 20px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+        }
+
+        .stat-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 20px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+
+        .main-nav {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 10px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+        }
+
+        .nav-link {
+            padding: 10px 20px;
+            text-decoration: none;
+            color: var(--text-primary);
+            border-radius: 6px;
+            transition: all 0.3s;
+        }
+
+        .nav-link:hover {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .nav-link.active {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        /* Notification animations */
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
+
+        /* Modal centering */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active,
+        .modal[style*="display: flex"] {
+            display: flex !important;
+        }
+    </style>
+</body>
+</html>

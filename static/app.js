@@ -1108,10 +1108,14 @@ async function showPlayerGraph(playerName) {
         const data = await response.json();
         
         if (response.ok) {
+            // Store player name in modal data attribute
+            const modal = document.getElementById('playerModal');
+            modal.dataset.playerName = playerName;
+            
             document.getElementById('modalPlayerName').textContent = `📊 ${playerName} - EXP History`;
             const graphData = JSON.parse(data.graph);
             // Show modal first so the container has correct size, then plot and trigger a resize
-            document.getElementById('playerModal').classList.add('active');
+            modal.classList.add('active');
             Plotly.newPlot('modalGraphDiv', graphData.data, graphData.layout, {responsive: true});
             try {
                 Plotly.Plots.resize(document.getElementById('modalGraphDiv'));
@@ -1646,8 +1650,9 @@ function switchModalMainTab(tabName) {
     
     // If switching to multi-graph tab, ensure data is loaded and rendered
     if (tabName === 'multi-graph') {
-        const modalPlayerName = document.getElementById('modalPlayerName').textContent;
-        const playerName = modalPlayerName.replace('📊 ', '').replace(' - EXP History', '').trim();
+        // Use data attribute instead of parsing title
+        const modal = document.getElementById('playerModal');
+        const playerName = modal.dataset.playerName || document.getElementById('modalPlayerName').textContent.split('(')[0].trim();
         
         // Check if multi-graph already has content
         const multiGraphDiv = document.getElementById('modalMultiGraphDiv');

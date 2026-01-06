@@ -27,6 +27,34 @@ body {
     transition: margin-left 0.3s;
 }
 
+/* Navigation */
+.main-nav {
+    display: flex;
+    gap: 10px;
+    padding: 15px 30px;
+    background: rgba(255, 197, 0, 0.1);
+    border-bottom: 2px solid #FFC500;
+}
+
+.nav-link {
+    padding: 10px 20px;
+    text-decoration: none;
+    color: #333;
+    border-radius: 6px;
+    transition: all 0.3s;
+    font-weight: 500;
+}
+
+.nav-link:hover {
+    background: #C21500;
+    color: white;
+}
+
+.nav-link.active {
+    background: #C21500;
+    color: white;
+}
+
 /* Header */
 header {
     background: linear-gradient(135deg, #FFC500 0%, #C21500 100%);
@@ -2538,6 +2566,22 @@ header p {
     .combined-overview-chart {
         height: 400px;
     }
+}
+
+/* VIP Page Styles */
+.section-card {
+    background: white;
+    border-radius: 12px;
+    padding: 25px;
+    margin-bottom: 25px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.section-card h2 {
+    margin-bottom: 20px;
+    color: #C21500;
+    border-bottom: 2px solid #FFC500;
+    padding-bottom: 10px;
 }
 
 /* Footer Styles */
