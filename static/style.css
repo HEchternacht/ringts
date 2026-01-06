@@ -912,7 +912,7 @@ header p {
 .graph-container {
     width: 100%;
     max-width: 60%;
-    margin: 0    0;
+    margin: 0    0  ;
     padding: 0;
 }
 

@@ -991,6 +991,7 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
     compressed_data = {name: [] for name in names_list}
     
     prev_date = None
+    prev_time = None
     i = 0
     while i < num_times:
         # Check if this position starts a zero group
@@ -1020,6 +1021,7 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
                 
                 compressed_times.append(label)
                 prev_date = end_date
+                prev_time = end_time
                 
                 # Add single zero for each player for this period
                 for name in names_list:
@@ -1030,19 +1032,37 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
                 break
         
         if not in_zero_group:
-            # Regular data point - convert to string with smart date display
+            # Regular data point - show as range from previous timestamp to current
             time_obj = pd.to_datetime(all_update_times[i])
             current_date = time_obj.date()
             
-            if current_date != prev_date:
-                # Date changed - show full date
-                time_str = time_obj.strftime('%d/%m/%Y %H:%M')
+            # Determine start time for this bucket (previous timestamp or first point)
+            if prev_time is None:
+                # First data point - show as single time point
+                if current_date != prev_date:
+                    time_str = time_obj.strftime('%d/%m/%Y %H:%M')
+                else:
+                    time_str = time_obj.strftime('%H:%M')
             else:
-                # Same day - show only time
-                time_str = time_obj.strftime('%H:%M')
+                # Show range from previous timestamp to current
+                start_date = prev_time.date()
+                
+                if start_date == current_date:
+                    # Same day - show time range
+                    if current_date != prev_date:
+                        time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%H:%M')}"
+                    else:
+                        time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%H:%M')}"
+                else:
+                    # Different days - show full range
+                    if start_date != prev_date:
+                        time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                    else:
+                        time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
             
             compressed_times.append(time_str)
             prev_date = current_date
+            prev_time = time_obj
             
             for name in names_list:
                 compressed_data[name].append(all_player_data[name][i])
