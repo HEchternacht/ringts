@@ -126,9 +126,17 @@
 
             <div class="info-container">
                 <div class="comparison-section">
-                    <h2>🏆 Player Comparison</h2>
-                    <div id="comparisonInfo" class="comparison-placeholder">
-                        <p>Click "Generate Visualization" to see rankings and comparisons</p>
+                    <div class="carousel-header">
+                        <button class="carousel-nav-btn" id="comparisonPrevBtn" style="visibility: hidden;">&lt;</button>
+                        <h2 id="comparisonTitle">🏆 Player Comparison</h2>
+                        <button class="carousel-nav-btn" id="comparisonNextBtn" style="visibility: hidden;">&gt;</button>
+                    </div>
+                    <div class="carousel-wrapper">
+                        <div id="comparisonCarousel" class="carousel-container">
+                            <div class="carousel-item active" id="comparisonInfo">
+                                <p>Click "Generate Visualization" to see rankings and comparisons</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
@@ -140,7 +148,11 @@
                 </div>
 
                 <div class="player-details-dashboard" id="playerDetailsDashboard" style="display: none;">
-                    <h2 id="dashboardPlayerName">📋 Player Details</h2>
+                    <div class="carousel-header">
+                        <button class="carousel-nav-btn" id="playerDetailsPrevBtn" style="visibility: hidden;">&lt;</button>
+                        <h2 id="dashboardPlayerName">📋 Player Details</h2>
+                        <button class="carousel-nav-btn" id="playerDetailsNextBtn" style="visibility: hidden;">&gt;</button>
+                    </div>
                     
                     <!-- Dashboard Tabs -->
                     <div class="dashboard-main-tabs">
@@ -330,9 +342,14 @@
 
         </div>
         <!-- End main-content -->
+        
 
     </div>
 
+    <footer class="site-footer">
+        <span class="accent" aria-hidden="true"></span>
+        <span class="credit">...made by <strong>Rollabostx</strong></span>
+    </footer>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

@@ -1053,6 +1053,18 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
 
 def create_interactive_graph(names, database, datetime1=None, datetime2=None):
     """Create interactive Plotly graph for player EXP gains"""
+    # Custom color palette based on theme colors
+    theme_colors = [
+        '#C21500',  # Primary red-orange
+        '#FFC500',  # Primary golden yellow
+        '#FF6B35',  # Complementary orange
+        '#FFE156',  # Light yellow
+        '#B81400',  # Darker red
+        '#E6A900',  # Darker yellow
+        '#FF8F66',  # Light orange
+        '#FFD966',  # Pale yellow
+    ]
+    
     table = database.get_deltas()
 
     if datetime1 and datetime2:
@@ -1085,11 +1097,13 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
     fig = go.Figure()
 
     # Build traces with compressed data
-    for name in names_list:
+    for idx, name in enumerate(names_list):
+        color = theme_colors[idx % len(theme_colors)]
         fig.add_trace(go.Bar(
             x=compressed_times,
             y=compressed_data[name],
             name=name,
+            marker_color=color,
             text=[str(int(exp)) if exp > 0 else '' for exp in compressed_data[name]],
             textposition='outside',
             textangle=0,
@@ -1112,7 +1126,8 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
             tickangle=-45,
             tickmode='auto',
             nticks=20
-        )
+        ),
+        colorway=theme_colors  # Set default color palette
     )
 
     return fig.to_json()
@@ -1200,7 +1215,8 @@ def get_graph():
         return jsonify({'error': 'No players selected'}), 400
 
     try:
-        # Generate graph
+        # Generate individual graph for each player (for carousel)
+        # But send the same combined graph data to maintain compatibility
         graph_json = create_interactive_graph(names, db, datetime1, datetime2)
 
         # Get stats for selected players

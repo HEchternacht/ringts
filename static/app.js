@@ -9,6 +9,15 @@ let deltasByDate = new Map();
 let deltaIds = new Set(); // Track unique deltas to prevent duplicates
 let currentFilters = { world: 'Auroria', guild: 'Ascended Auroria' }; // Global filters
 
+// Carousel state
+let currentComparisonIndex = 0;
+let currentPlayerDetailsIndex = 0;
+let allComparisons = [];
+let selectedPlayersForCarousel = [];
+
+// Player details cache
+let playerDetailsCache = {};
+
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
     initializeApp();
@@ -38,6 +47,12 @@ function setupEventListeners() {
     document.getElementById('generateVisualization').addEventListener('click', generateVisualization);
     document.getElementById('clearAll').addEventListener('click', clearAll);
     document.getElementById('clearDates').addEventListener('click', clearDates);
+    
+    // Carousel navigation
+    document.getElementById('comparisonPrevBtn').addEventListener('click', () => navigateCarousel('comparison', -1));
+    document.getElementById('comparisonNextBtn').addEventListener('click', () => navigateCarousel('comparison', 1));
+    document.getElementById('playerDetailsPrevBtn').addEventListener('click', () => navigateCarousel('playerDetails', -1));
+    document.getElementById('playerDetailsNextBtn').addEventListener('click', () => navigateCarousel('playerDetails', 1));
     
     // Manual Update button
     document.getElementById('manualUpdate').addEventListener('click', triggerManualUpdate);
@@ -263,6 +278,16 @@ async function generateVisualization() {
     showLoading();
     
     try {
+        // Reset carousel state
+        currentComparisonIndex = 0;
+        currentPlayerDetailsIndex = 0;
+        allComparisons = [];
+        selectedPlayersForCarousel = [...selectedPlayers];
+        
+        // Clear cache to avoid bugs with stale data
+        playerDetailsCache = {};
+        
+        // Fetch combined data for all selected players
         const response = await fetch('/api/graph', {
             method: 'POST',
             headers: {
@@ -278,18 +303,26 @@ async function generateVisualization() {
         const data = await response.json();
         
         if (response.ok) {
-            // Render graph
+            // Render combined graph for all players
             const graphData = JSON.parse(data.graph);
-            graphData.layout.height = 500;
-            Plotly.newPlot('graphDiv', graphData.data, graphData.layout, {responsive: true});
+            graphData.layout.height = 600;
+            graphData.layout.autosize = true;
+            Plotly.newPlot('graphDiv', graphData.data, graphData.layout, {
+                responsive: true,
+                displayModeBar: true,
+                displaylogo: false
+            });
+            
+            // Store comparison data for carousel
+            allComparisons = data.comparison || [];
+            
+            // Render carousel for comparisons
+            renderComparisonCarousel();
             
             // Render stats
             renderStatsTable(data.stats);
             
-            // Render comparison
-            renderComparison(data.comparison);
-            
-            // Load player details for all selected players
+            // Load player details for carousel
             await loadDashboardPlayerDetails(selectedPlayers);
         } else {
             showError(data.error || 'Failed to generate visualization');
@@ -301,11 +334,166 @@ async function generateVisualization() {
     }
 }
 
-async function loadDashboardPlayerDetails(playerNames) {
-    const dashboardSection = document.getElementById('playerDetailsDashboard');
+// Render comparison carousel
+function renderComparisonCarousel() {
+    const carousel = document.getElementById('comparisonCarousel');
+    const title = document.getElementById('comparisonTitle');
+    const prevBtn = document.getElementById('comparisonPrevBtn');
+    const nextBtn = document.getElementById('comparisonNextBtn');
+    
+    // Clear existing content
+    carousel.innerHTML = '';
+    
+    if (allComparisons.length === 0) {
+        carousel.innerHTML = '<div class="carousel-item active"><p>No comparison data available</p></div>';
+        prevBtn.style.visibility = 'hidden';
+        nextBtn.style.visibility = 'hidden';
+        return;
+    }
+    
+    // Create carousel items for each player comparison
+    allComparisons.forEach((comparison, index) => {
+        const item = document.createElement('div');
+        item.className = `carousel-item ${index === 0 ? 'active' : ''}`;
+        item.innerHTML = renderSingleComparison(comparison);
+        carousel.appendChild(item);
+    });
+    
+    // Update title and navigation buttons
+    title.textContent = `🏆 ${allComparisons[0].name} - Comparison`;
+    prevBtn.style.visibility = allComparisons.length > 1 ? 'visible' : 'hidden';
+    nextBtn.style.visibility = allComparisons.length > 1 ? 'visible' : 'hidden';
+}
+
+// Render single comparison card
+function renderSingleComparison(player) {
+    return `
+        <div class="comparison-card">
+            <h3>${player.name}</h3>
+            <div class="comparison-stat">
+                <span class="comparison-label">Rank:</span>
+                <span class="comparison-value"><span class="rank-badge">#${player.rank} of ${player.total_players}</span></span>
+            </div>
+            <div class="comparison-stat">
+                <span class="comparison-label">Percentile:</span>
+                <span class="comparison-value"><span class="percentile-badge">Top ${100 - player.percentile}%</span></span>
+            </div>
+            <div class="comparison-stat">
+                <span class="comparison-label">Period EXP:</span>
+                <span class="comparison-value">${formatNumber(player.total_exp_period)}</span>
+            </div>
+            <div class="comparison-stat">
+                <span class="comparison-label">Total EXP:</span>
+                <span class="comparison-value">${formatNumber(player.current_total_exp)}</span>
+            </div>
+        </div>
+    `;
+}
+
+// Navigate carousel with looping
+function navigateCarousel(type, direction) {
+    if (type === 'comparison') {
+        if (allComparisons.length <= 1) return;
+        
+        const newIndex = (currentComparisonIndex + direction + allComparisons.length) % allComparisons.length;
+        const carousel = document.getElementById('comparisonCarousel');
+        const items = carousel.querySelectorAll('.carousel-item');
+        const title = document.getElementById('comparisonTitle');
+        
+        // Hide current item
+        items[currentComparisonIndex].classList.remove('active');
+        
+        // Show new item
+        currentComparisonIndex = newIndex;
+        items[currentComparisonIndex].classList.add('active');
+        
+        // Update title
+        title.textContent = `🏆 ${allComparisons[currentComparisonIndex].name} - Comparison`;
+        
+    } else if (type === 'playerDetails') {
+        if (selectedPlayersForCarousel.length <= 1) return;
+        
+        const newIndex = (currentPlayerDetailsIndex + direction + selectedPlayersForCarousel.length) % selectedPlayersForCarousel.length;
+        
+        // Update current index
+        currentPlayerDetailsIndex = newIndex;
+        
+        // Load the player details for the new index
+        const playerName = selectedPlayersForCarousel[currentPlayerDetailsIndex];
+        loadSinglePlayerDetails(playerName);
+    }
+}
+
+async function loadSinglePlayerDetails(playerName) {
     const dashboardPlayerName = document.getElementById('dashboardPlayerName');
     const loadingEl = document.getElementById('dashboardDetailsLoading');
     const contentEl = document.getElementById('dashboardDetailsContent');
+    const multiGraphDiv = document.getElementById('dashboardMultiGraphDiv');
+    
+    // Update player name first
+    dashboardPlayerName.textContent = `📋 ${playerName}`;
+    
+    // Switch to multi-graph tab automatically
+    switchDashboardMainTab('multi-graph');
+    
+    // Always clear the multi-graph first to prevent old graph from showing
+    if (multiGraphDiv) {
+        multiGraphDiv.innerHTML = '';
+        // Also purge any Plotly data
+        if (multiGraphDiv.data) {
+            Plotly.purge(multiGraphDiv);
+        }
+    }
+    
+    // Check if data is cached
+    if (playerDetailsCache[playerName]) {
+        // Show loading briefly
+        loadingEl.style.display = 'flex';
+        contentEl.style.display = 'none';
+        
+        // Use cached data with small delay
+        setTimeout(() => {
+            contentEl.innerHTML = playerDetailsCache[playerName].html;
+            contentEl.style.display = 'block';
+            loadingEl.style.display = 'none';
+            
+            // Re-render the multi-graph from cache
+            if (playerDetailsCache[playerName].multiGraphData) {
+                setTimeout(() => {
+                    renderCombinedOverview(playerDetailsCache[playerName].multiGraphData, 'dashboardMultiGraphDiv');
+                }, 50);
+            }
+        }, 100);
+        return;
+    }
+    
+    // Show loading and clear old content with a small delay to ensure UI updates
+    setTimeout(async () => {
+        loadingEl.style.display = 'flex';
+        contentEl.style.display = 'none';
+        contentEl.innerHTML = '';
+        
+        // Small delay to ensure loading animation is visible
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        // Load details with dashboard context and cache the result
+        await loadPlayerDetailsWithCache(playerName, 'dashboard');
+        
+        // Force refresh the multi-graph view after loading
+        setTimeout(() => {
+            const multiGraphDiv = document.getElementById('dashboardMultiGraphDiv');
+            if (multiGraphDiv && multiGraphDiv.data) {
+                Plotly.Plots.resize(multiGraphDiv);
+            }
+        }, 100);
+    }, 0);
+}
+
+async function loadDashboardPlayerDetails(playerNames) {
+    const dashboardSection = document.getElementById('playerDetailsDashboard');
+    const dashboardPlayerName = document.getElementById('dashboardPlayerName');
+    const prevBtn = document.getElementById('playerDetailsPrevBtn');
+    const nextBtn = document.getElementById('playerDetailsNextBtn');
     
     if (playerNames.length === 0) {
         dashboardSection.style.display = 'none';
@@ -314,13 +502,53 @@ async function loadDashboardPlayerDetails(playerNames) {
     
     dashboardSection.style.display = 'block';
     
-    // If multiple players selected, show the first one
-    // User can cycle through by selecting different players
+    // Show/hide navigation buttons
+    prevBtn.style.visibility = playerNames.length > 1 ? 'visible' : 'hidden';
+    nextBtn.style.visibility = playerNames.length > 1 ? 'visible' : 'hidden';
+    
+    // Load the first player
+    currentPlayerDetailsIndex = 0;
     const playerName = playerNames[0];
     dashboardPlayerName.textContent = `📋 ${playerName}`;
     
     // Load details with dashboard context
-    await loadPlayerDetails(playerName, 'dashboard');
+    await loadPlayerDetailsWithCache(playerName, 'dashboard');
+}
+
+async function loadPlayerDetailsWithCache(playerName, context = 'modal') {
+    const loadingId = context === 'modal' ? 'playerDetailsLoading' : 'dashboardDetailsLoading';
+    const contentId = context === 'modal' ? 'playerDetailsContent' : 'dashboardDetailsContent';
+    
+    const loadingEl = document.getElementById(loadingId);
+    const contentEl = document.getElementById(contentId);
+    
+    loadingEl.style.display = 'flex';
+    contentEl.style.display = 'none';
+    
+    try {
+        const response = await fetch(`/api/player-details/${encodeURIComponent(playerName)}`);
+        const data = await response.json();
+        
+        if (data.success && data.tables.length > 0) {
+            const html = renderPlayerDetails(data, context);
+            contentEl.innerHTML = html;
+            contentEl.style.display = 'block';
+            
+            // Cache the data
+            playerDetailsCache[playerName] = {
+                html: html,
+                multiGraphData: data
+            };
+        } else {
+            contentEl.innerHTML = '<p class="no-data">No detailed data available for this player.</p>';
+            contentEl.style.display = 'block';
+        }
+    } catch (error) {
+        contentEl.innerHTML = `<p class="error">Failed to load player details: ${error.message}</p>`;
+        contentEl.style.display = 'block';
+    } finally {
+        loadingEl.style.display = 'none';
+    }
 }
 
 // Render comparison data
@@ -475,10 +703,29 @@ function clearAll() {
     renderPlayerList(allPlayers);
     clearDates();
     
+    // Reset carousel state
+    currentComparisonIndex = 0;
+    currentPlayerDetailsIndex = 0;
+    allComparisons = [];
+    selectedPlayersForCarousel = [];
+    
+    // Clear cache
+    playerDetailsCache = {};
+    
     // Clear results
     document.getElementById('graphDiv').innerHTML = '<p style="padding: 20px; text-align: center; color: #6c757d; font-style: italic;">Select players and click "Generate Visualization" to view data</p>';
+    
+    // Clear comparison carousel
+    const comparisonCarousel = document.getElementById('comparisonCarousel');
+    comparisonCarousel.innerHTML = '<div class="carousel-item active"><p>Click "Generate Visualization" to see rankings and comparisons</p></div>';
+    document.getElementById('comparisonTitle').textContent = '🏆 Player Comparison';
+    document.getElementById('comparisonPrevBtn').style.visibility = 'hidden';
+    document.getElementById('comparisonNextBtn').style.visibility = 'hidden';
+    
     document.getElementById('statsTable').innerHTML = '<div class="stats-placeholder"><p>Statistical breakdown will appear here</p></div>';
-    document.getElementById('comparisonInfo').innerHTML = '<div class="comparison-placeholder"><p>Click "Generate Visualization" to see rankings and comparisons</p></div>';
+    
+    // Hide player details section
+    document.getElementById('playerDetailsDashboard').style.display = 'none';
 }
 
 // Clear dates
@@ -841,9 +1088,15 @@ async function showPlayerGraph(playerName) {
         if (response.ok) {
             document.getElementById('modalPlayerName').textContent = `📊 ${playerName} - EXP History`;
             const graphData = JSON.parse(data.graph);
-            Plotly.newPlot('modalGraphDiv', graphData.data, graphData.layout, {responsive: true});
+            // Show modal first so the container has correct size, then plot and trigger a resize
             document.getElementById('playerModal').classList.add('active');
-            
+            Plotly.newPlot('modalGraphDiv', graphData.data, graphData.layout, {responsive: true});
+            try {
+                Plotly.Plots.resize(document.getElementById('modalGraphDiv'));
+            } catch (e) {
+                console.warn('Plotly resize failed:', e);
+            }
+
             // Load player details
             await loadPlayerDetails(playerName, 'modal');
         } else {
@@ -1335,6 +1588,19 @@ function switchModalMainTab(tabName) {
         content.classList.remove('active');
     });
     document.getElementById(`modal-${tabName}`).classList.add('active');
+    
+    // If switching to multi-graph tab, ensure data is loaded and rendered
+    if (tabName === 'multi-graph') {
+        const modalPlayerName = document.getElementById('modalPlayerName').textContent;
+        const playerName = modalPlayerName.replace('📊 ', '').replace(' - EXP History', '').trim();
+        
+        // Check if multi-graph already has content
+        const multiGraphDiv = document.getElementById('modalMultiGraphDiv');
+        if (multiGraphDiv && !multiGraphDiv.hasChildNodes()) {
+            // Data not yet rendered, trigger load
+            loadPlayerDetailsForMultiGraph(playerName);
+        }
+    }
 }
 
 function switchDashboardMainTab(tabName) {
@@ -1349,6 +1615,28 @@ function switchDashboardMainTab(tabName) {
         content.classList.remove('active');
     });
     document.getElementById(`dashboard-${tabName}`).classList.add('active');
+}
+
+async function loadPlayerDetailsForMultiGraph(playerName) {
+    const multiGraphDiv = document.getElementById('modalMultiGraphDiv');
+    const multiGraphLoading = document.getElementById('multiGraphLoading');
+    
+    if (multiGraphLoading) multiGraphLoading.style.display = 'flex';
+    
+    try {
+        const response = await fetch(`/api/player-details/${encodeURIComponent(playerName)}`);
+        const data = await response.json();
+        
+        if (data.success && data.tables.length > 0) {
+            renderCombinedOverview(data, 'modalMultiGraphDiv');
+        } else {
+            multiGraphDiv.innerHTML = '<p class="no-data">No data available for multi-graph</p>';
+        }
+    } catch (error) {
+        multiGraphDiv.innerHTML = `<p class="error">Failed to load data: ${error.message}</p>`;
+    } finally {
+        if (multiGraphLoading) multiGraphLoading.style.display = 'none';
+    }
 }
 
 window.switchDetailTab = switchDetailTab;
