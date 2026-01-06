@@ -106,3 +106,6 @@ uvicorn==0.40.0
     # via ringts (pyproject.toml)
 werkzeug==3.1.4
     # via flask
+
+
+uwsgi==2.0.31
