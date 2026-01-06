@@ -32,6 +32,7 @@ TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
 
+FORCE_PROXY=True if os.environ.get('FORCE_PROXY', None).lower() == 'true' else False
 
 # Error Handlers
 @app.errorhandler(400)
@@ -634,16 +635,21 @@ def scrape_player_data(name):
     params = {"name": name}
     
     # Try direct fetch first
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code != 200:
-            log_console(f"Direct fetch failed for '{name}' with status {response.status_code}, trying proxies...", "WARNING")
-            # Build URL with params for proxy attempt
+    if not FORCE_PROXY:
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code != 200:
+                log_console(f"Direct fetch failed for '{name}' with status {response.status_code}, trying proxies...", "WARNING")
+                # Build URL with params for proxy attempt
+                url_with_params = f"{url}?name={name.replace(' ', '+')}"
+                response = get_multiple(url_with_params, pp)
+                log_console(f"Proxy fetch response for '{name}': {response}", "INFO")
+        except Exception as e:
+            log_console(f"Direct fetch failed for '{name}': {str(e)}, trying proxies...", "WARNING")
             url_with_params = f"{url}?name={name.replace(' ', '+')}"
             response = get_multiple(url_with_params, pp)
             log_console(f"Proxy fetch response for '{name}': {response}", "INFO")
-    except Exception as e:
-        log_console(f"Direct fetch failed for '{name}': {str(e)}, trying proxies...", "WARNING")
+    else:
         url_with_params = f"{url}?name={name.replace(' ', '+')}"
         response = get_multiple(url_with_params, pp)
         log_console(f"Proxy fetch response for '{name}': {response}", "INFO")
@@ -704,13 +710,16 @@ def get_ranking(world=None, guildname=None):
     url = f"https://rubinothings.com.br/guild.php?guild={guildname.replace(' ', '+')}&world={world}"
 
     # Try direct fetch first
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+    if not FORCE_PROXY:
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code != 200:
+                log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+                response = get_multiple(url, pp)
+        except Exception as e:
+            log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
             response = get_multiple(url, pp)
-    except Exception as e:
-        log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
+    else:
         response = get_multiple(url, pp)
     
     if not response:
@@ -728,13 +737,18 @@ def get_last_status_updates(world=None):
     url = "https://rubinothings.com.br/status"
     
     # Try direct fetch first
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+
+    if not FORCE_PROXY:
+
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code != 200:
+                log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+                response = get_multiple(url, pp)
+        except Exception as e:
+            log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
             response = get_multiple(url, pp)
-    except Exception as e:
-        log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
+    else:
         response = get_multiple(url, pp)
     
     if not response:
