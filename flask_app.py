@@ -4,6 +4,7 @@ import threading
 import time
 import queue
 import json
+import gc
 from io import StringIO
 from flask import Flask, render_template, jsonify, request, Response
 import pandas as pd
@@ -20,6 +21,10 @@ from pebble import ThreadPool
 from concurrent.futures import TimeoutError, as_completed
 import time
 import threading
+
+# Configure aggressive garbage collection for memory efficiency
+gc.set_threshold(700, 10, 5)  # More aggressive than default (700, 10, 10)
+gc.enable()
 
 app = Flask(__name__)
 
@@ -227,9 +232,9 @@ class Database:
     def _read_exps(self):
         """Read exps table from storage"""
         try:
-            df = pd.read_csv(self.exps_file)
-            df['last update'] = pd.to_datetime(df['last update'])
-            df['exp'] = df['exp'].astype(int)
+            df = pd.read_csv(self.exps_file, dtype={'name': str, 'exp': 'int64', 'world': str, 'guild': str}, parse_dates=['last update'])
+            if 'exp' not in df.select_dtypes(include=['int']).columns:
+                df['exp'] = df['exp'].astype('int64')
             
             # Migrate legacy data: add world and guild columns if missing
             if 'world' not in df.columns:
@@ -248,9 +253,9 @@ class Database:
     def _read_deltas(self):
         """Read deltas table from storage"""    
         try:
-            df = pd.read_csv(self.deltas_file)
-            df['update time'] = pd.to_datetime(df['update time'])
-            df['deltaexp'] = df['deltaexp'].astype(int)
+            df = pd.read_csv(self.deltas_file, dtype={'name': str, 'deltaexp': 'int64', 'world': str, 'guild': str}, parse_dates=['update time'])
+            if 'deltaexp' not in df.select_dtypes(include=['int']).columns:
+                df['deltaexp'] = df['deltaexp'].astype('int64')
             
             # Migrate legacy data: add world and guild columns if missing
             if 'world' not in df.columns:
@@ -381,38 +386,46 @@ class Database:
             else:
                 prev_update_time = update_time
 
-            # Process each player
-            for index, row in df.iterrows():
-                name = row['name']
-                exp = int(row['exp'])
-                last_update = row['last update']
-                world = row.get('world', DEFAULT_WORLD)
-                guild = row.get('guild', DEFAULT_GUILD)
+            # Create index for faster lookups
+            exps_dict = exps.set_index('name')[['exp']].to_dict('index')
+            deltas_set = set(zip(deltas['name'], deltas['update time']))
+            
+            # Collect new rows instead of appending one-by-one
+            new_deltas = []
+            new_exps = []
+            exps_updates = {}  # name -> updates dict
+            deltas_updates = {}  # (name, time) -> deltaexp
+            
+            # Free memory from temporary structures
+            del df
 
-                if name in exps['name'].values:
+            # Process each player
+            for row in df.itertuples(index=False):
+                name = row.name
+                exp = int(row.exp)
+                last_update = row.last_update
+                world = getattr(row, 'world', DEFAULT_WORLD)
+                guild = getattr(row, 'guild', DEFAULT_GUILD)
+
+                if name in exps_dict:
                     # Existing player - calculate delta
-                    prev_exp = exps[exps['name'] == name]['exp'].values[0]
+                    prev_exp = exps_dict[name]['exp']
                     deltaexp = exp - prev_exp
                     if deltaexp != 0 and not self.skip_next_deltas:
-                        # Check if delta already exists for this player and update time
-                        existing_delta_mask = (deltas['name'] == name) & (deltas['update time'] == update_time)
-                        existing_delta = deltas[existing_delta_mask]
-                        
-                        if existing_delta.empty:
-                            new_delta = {
+                        delta_key = (name, update_time)
+                        if delta_key not in deltas_set:
+                            new_deltas.append({
                                 'name': name, 
                                 'deltaexp': deltaexp, 
                                 'update time': update_time,
                                 'world': world,
                                 'guild': guild
-                            }
+                            })
                             log_console(f"EXP gain: {name} +{deltaexp} ({world} - {guild})")
-                            deltas.loc[len(deltas)] = new_delta
                         else:
-                            # Duplicate found - update with latest value
-                            existing_exp = existing_delta['deltaexp'].values[0]
-                            deltas.loc[existing_delta_mask, 'deltaexp'] = deltaexp
-                            log_console(f"Updated duplicate for {name} at {update_time}: {existing_exp} -> {deltaexp} (latest)", "INFO")
+                            # Duplicate found - mark for update
+                            deltas_updates[delta_key] = deltaexp
+                            log_console(f"Updated duplicate for {name} at {update_time} (latest)", "INFO")
                         
                         # Broadcast to delta stream
                         delta_queue.put({
@@ -426,43 +439,33 @@ class Database:
                     elif deltaexp != 0 and self.skip_next_deltas:
                         log_console(f"Skipping first delta after reset for {name}: {deltaexp} ({world} - {guild})", "INFO")
                     
-                    # Update existing player
-                    exps.loc[exps['name'] == name, 'exp'] = exp
-                    exps.loc[exps['name'] == name, 'last update'] = last_update
-                    exps.loc[exps['name'] == name, 'world'] = world
-                    exps.loc[exps['name'] == name, 'guild'] = guild
+                    # Mark player for update
+                    exps_updates[name] = {'exp': exp, 'last update': last_update, 'world': world, 'guild': guild}
                 else:
                     # New player
-                    new_entry = {
+                    new_exps.append({
                         'name': name, 
                         'exp': exp, 
                         'last update': last_update,
                         'world': world,
                         'guild': guild
-                    }
-                    exps.loc[len(exps)] = new_entry
+                    })
                     
-                    # Skip delta for new players if we just reset (they're not actually "new")
+                    # Skip delta for new players if we just reset
                     if not self.skip_next_deltas:
-                        # Check if delta already exists for this player and update time
-                        existing_delta_mask = (deltas['name'] == name) & (deltas['update time'] == update_time)
-                        existing_delta = deltas[existing_delta_mask]
-                        
-                        if existing_delta.empty:
-                            new_delta = {
+                        delta_key = (name, update_time)
+                        if delta_key not in deltas_set:
+                            new_deltas.append({
                                 'name': name, 
                                 'deltaexp': exp, 
                                 'update time': update_time,
                                 'world': world,
                                 'guild': guild
-                            }
-                            deltas.loc[len(deltas)] = new_delta
+                            })
                             log_console(f"New player: {name} with {exp} EXP ({world} - {guild})")
                         else:
-                            # Duplicate found - update with latest value
-                            existing_exp = existing_delta['deltaexp'].values[0]
-                            deltas.loc[existing_delta_mask, 'deltaexp'] = exp
-                            log_console(f"Updated duplicate for new player {name} at {update_time}: {existing_exp} -> {exp} (latest)", "INFO")
+                            deltas_updates[delta_key] = exp
+                            log_console(f"Updated duplicate for new player {name} at {update_time} (latest)", "INFO")
                         
                         # Broadcast to delta stream
                         delta_queue.put({
@@ -476,6 +479,22 @@ class Database:
                     else:
                         log_console(f"Skipping first delta after reset for new player {name}: {exp} ({world} - {guild})", "INFO")
             
+            # Apply updates efficiently
+            for name, updates in exps_updates.items():
+                mask = exps['name'] == name
+                for col, val in updates.items():
+                    exps.loc[mask, col] = val
+            
+            for (name, time), deltaexp in deltas_updates.items():
+                mask = (deltas['name'] == name) & (deltas['update time'] == time)
+                deltas.loc[mask, 'deltaexp'] = deltaexp
+            
+            # Add new rows in batch
+            if new_exps:
+                exps = pd.concat([exps, pd.DataFrame(new_exps)], ignore_index=True)
+            if new_deltas:
+                deltas = pd.concat([deltas, pd.DataFrame(new_deltas)], ignore_index=True)
+            
             # Reset the skip flag after processing all players in this update
             if self.skip_next_deltas:
                 self.skip_next_deltas = False
@@ -484,6 +503,10 @@ class Database:
             # Write changes to storage immediately
             self._write_exps(exps)
             self._write_deltas(deltas)
+            
+            # Free memory
+            del exps_dict, deltas_set, new_deltas, new_exps, exps_updates, deltas_updates, exps, deltas
+            gc.collect()
     
     def get_exps(self):
         """Get all player EXP data"""
@@ -658,7 +681,7 @@ class Database:
         """Get current VIP data"""
         with self.lock:
             try:
-                df = pd.read_csv(self.vipsdata_file)
+                df = pd.read_csv(self.vipsdata_file, dtype={'name': str, 'world': str, 'today_exp': 'int64', 'today_online': 'int64'})
                 return df
             except (FileNotFoundError, pd.errors.EmptyDataError):
                 return pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
@@ -668,7 +691,7 @@ class Database:
         with self.lock:
             # Read VIP data directly to avoid nested lock
             try:
-                df = pd.read_csv(self.vipsdata_file)
+                df = pd.read_csv(self.vipsdata_file, dtype={'name': str, 'world': str, 'today_exp': 'int64', 'today_online': 'int64'})
             except (FileNotFoundError, pd.errors.EmptyDataError):
                 df = pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
             
@@ -691,8 +714,9 @@ class Database:
         """Get VIP delta history"""
         with self.lock:
             try:
-                df = pd.read_csv(self.deltavip_file)
-                df['update_time'] = pd.to_datetime(df['update_time'])
+                df = pd.read_csv(self.deltavip_file, 
+                                dtype={'name': str, 'world': str, 'date': str, 'delta_exp': 'int64', 'delta_online': 'int64'},
+                                parse_dates=['update_time'])
                 return df
             except (FileNotFoundError, pd.errors.EmptyDataError):
                 return pd.DataFrame(columns=['name', 'world', 'date', 'delta_exp', 'delta_online', 'update_time'])
@@ -702,8 +726,9 @@ class Database:
         with self.lock:
             # Read VIP delta data directly to avoid nested lock
             try:
-                df = pd.read_csv(self.deltavip_file)
-                df['update_time'] = pd.to_datetime(df['update_time'])
+                df = pd.read_csv(self.deltavip_file,
+                                dtype={'name': str, 'world': str, 'date': str, 'delta_exp': 'int64', 'delta_online': 'int64'},
+                                parse_dates=['update_time'])
             except (FileNotFoundError, pd.errors.EmptyDataError):
                 df = pd.DataFrame(columns=['name', 'world', 'date', 'delta_exp', 'delta_online', 'update_time'])
             
@@ -788,6 +813,8 @@ def extract_tables(soup):
             df.attrs['table_index'] = i
             dataframes.append(df)
 
+    del rows, headers
+    gc.collect()
     return dataframes
 
 
@@ -845,12 +872,17 @@ def scrape_player_data(name):
             result['tables'] = tables_dict
             result['success'] = True
             log_console(f"Successfully scraped data for '{name}' - Found {len(tables)} tables", "INFO")
+            
+            # Free memory
+            del soup, tables, tables_dict
         else:
             log_console(f"Request failed for '{name}' with status code: {result['response_status']}", "ERROR")
             
     except Exception as e:
         log_console(f"Error parsing player data for '{name}': {str(e)}", "ERROR")
     
+    del response
+    gc.collect()
     return result
 
 
@@ -968,6 +1000,9 @@ def get_last_status_updates(world=None):
             df['last update'] = df['last update'].apply(parse_datetime)
             tables_dict[key] = df
 
+    # Clean up
+    del soup, r, split_tables, response
+    gc.collect()
     return tables_dict
 
 
@@ -1281,6 +1316,10 @@ def loop_get_rankings(database, debug=False):
                         database.save()
                         log_console(f"Updated {len(combined_df)} players for {world} at {update_time}", "SUCCESS")
                         
+                        # Free memory after database update
+                        del combined_df
+                        gc.collect()
+                        
                         # Scrape VIP data for THIS specific world
                         scrape_vip_data(database, world)
                         
@@ -1453,6 +1492,8 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
                 compressed_data[name].append(all_player_data[name][i])
             i += 1
     
+    del all_zero_positions, zero_groups
+    gc.collect()
     return compressed_times, compressed_data
 
 
@@ -1547,7 +1588,10 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
         colorway=theme_colors  # Set default color palette
     )
 
-    return fig.to_json()
+    result = fig.to_json()
+    del table, all_update_times, all_player_data, compressed_times, compressed_data, fig
+    gc.collect()
+    return result
 
 
 def get_player_stats(names, database, datetime1=None, datetime2=None):
@@ -1571,7 +1615,10 @@ def get_player_stats(names, database, datetime1=None, datetime2=None):
     stats = stats.sort_values('Total EXP', ascending=False)
     stats = stats.reset_index()
 
-    return stats.to_dict('records')
+    result = stats.to_dict('records')
+    del table, stats
+    gc.collect()
+    return result
 
 
 @app.route('/')
@@ -1750,25 +1797,30 @@ def get_rankings_table():
             'update time': list
         })
 
+        # Use efficient aggregation instead of apply
         grouped['sum'] = grouped['deltaexp'].apply(sum)
-        grouped['number of updates'] = grouped['deltaexp'].apply(len)
-        grouped['avg'] = grouped['deltaexp'].apply(lambda x: sum(x) / len(x) if len(x) > 0 else 0)
-        grouped['max'] = grouped['deltaexp'].apply(lambda x: max(x) if len(x) > 0 else 0)
-        grouped['min'] = grouped['deltaexp'].apply(lambda x: min(x) if len(x) > 0 else 0)
+        grouped['number of updates'] = grouped['deltaexp'].str.len()
+        grouped['avg'] = grouped['sum'] / grouped['number of updates']
+        grouped['max'] = grouped['deltaexp'].apply(max)
+        grouped['min'] = grouped['deltaexp'].apply(min)
 
-        # Convert to records
-        result = []
-        for name, row in grouped.iterrows():
-            result.append({
+        # Convert to records using to_dict for better performance
+        result = [
+            {
                 'name': name,
                 'total_exp': int(row['sum']),
                 'updates': int(row['number of updates']),
                 'avg_exp': round(row['avg'], 2),
                 'max_exp': int(row['max']),
                 'min_exp': int(row['min'])
-            })
+            }
+            for name, row in grouped.iterrows()
+        ]
 
-        return jsonify({'rankings': result})
+        response = jsonify({'rankings': result})
+        del table, grouped, result
+        gc.collect()
+        return response
     except Exception as e:
         log_console(f"Error in rankings table: {str(e)}", "ERROR")
         return jsonify({'error': str(e)}), 500
@@ -1852,8 +1904,8 @@ def upload_deltas():
         if not file.filename.endswith('.csv'):
             return jsonify({'error': 'Only CSV files are allowed'}), 400
         
-        # Read and validate the CSV
-        df = pd.read_csv(file)
+        # Read and validate the CSV with dtype optimization
+        df = pd.read_csv(file, dtype={'name': str, 'deltaexp': 'int64', 'world': str, 'guild': str}, parse_dates=['update time'])
         required_columns = ['name', 'deltaexp', 'update time']
         if not all(col in df.columns for col in required_columns):
             return jsonify({'error': f'CSV must have columns: {required_columns}'}), 400
@@ -1866,10 +1918,13 @@ def upload_deltas():
             log_console(f"Created backup: {backup_file}", "INFO")
         
         # Save the uploaded file
+        records_count = len(df)
         df.to_csv(db.deltas_file, index=False)
-        log_console(f"Uploaded deltas.csv with {len(df)} records", "SUCCESS")
+        log_console(f"Uploaded deltas.csv with {records_count} records", "SUCCESS")
         
-        return jsonify({'success': True, 'records': len(df)})
+        del df
+        gc.collect()
+        return jsonify({'success': True, 'records': records_count})
     except Exception as e:
         log_console(f"Error uploading deltas.csv: {str(e)}", "ERROR")
         return jsonify({'error': str(e)}), 500
@@ -1894,8 +1949,8 @@ def upload_exps():
         if not file.filename.endswith('.csv'):
             return jsonify({'error': 'Only CSV files are allowed'}), 400
         
-        # Read and validate the CSV
-        df = pd.read_csv(file)
+        # Read and validate the CSV with dtype optimization
+        df = pd.read_csv(file, dtype={'name': str, 'exp': 'int64', 'world': str, 'guild': str}, parse_dates=['last update'])
         required_columns = ['name', 'exp', 'last update']
         if not all(col in df.columns for col in required_columns):
             return jsonify({'error': f'CSV must have columns: {required_columns}'}), 400
@@ -1908,10 +1963,13 @@ def upload_exps():
             log_console(f"Created backup: {backup_file}", "INFO")
         
         # Save the uploaded file
+        records_count = len(df)
         df.to_csv(db.exps_file, index=False)
-        log_console(f"Uploaded exps.csv with {len(df)} records", "SUCCESS")
+        log_console(f"Uploaded exps.csv with {records_count} records", "SUCCESS")
         
-        return jsonify({'success': True, 'records': len(df)})
+        del df
+        gc.collect()
+        return jsonify({'success': True, 'records': records_count})
     except Exception as e:
         log_console(f"Error uploading exps.csv: {str(e)}", "ERROR")
         return jsonify({'error': str(e)}), 500
@@ -2017,9 +2075,8 @@ def get_deltas():
         
         recent_deltas = all_deltas.sort_values(['update time', 'name'], ascending=[False, True]).head(limit)
 
-        # Get distinct update times for efficient lookup
-        distinct_times = sorted(all_deltas['update time'].unique())
-        distinct_times_list = list(distinct_times)
+        # Get distinct update times for efficient lookup (already returns array, no need for list conversion)
+        distinct_times_list = sorted(all_deltas['update time'].unique())
 
         # Create a mapping of update_time -> prev_update_time
         prev_time_map = {}
@@ -2031,20 +2088,23 @@ def get_deltas():
 
         # Build delta list with calculated previous update times
         deltas = []
-        for idx, row in recent_deltas.iterrows():
-            current_time = row['update time']
+        for row in recent_deltas.itertuples(index=False):
+            current_time = row.update_time
             prev_update_time = prev_time_map.get(current_time, current_time)
 
             deltas.append({
-                'name': row['name'],
-                'deltaexp': int(row['deltaexp']),
+                'name': row.name,
+                'deltaexp': int(row.deltaexp),
                 'update_time': current_time.isoformat(),
                 'prev_update_time': prev_update_time.isoformat(),
-                'world': row.get('world', DEFAULT_WORLD),
-                'guild': row.get('guild', DEFAULT_GUILD)
+                'world': getattr(row, 'world', DEFAULT_WORLD),
+                'guild': getattr(row, 'guild', DEFAULT_GUILD)
             })
         
-        return jsonify({'deltas': deltas})
+        response = jsonify({'deltas': deltas})
+        del all_deltas, recent_deltas, distinct_times_list, prev_time_map, deltas
+        gc.collect()
+        return response
     except Exception as e:
         log_console(f"Error getting deltas: {str(e)}", "ERROR")
         return jsonify({'error': str(e)}), 500
@@ -2284,9 +2344,8 @@ def get_vip_deltas():
         # Sort by update time descending and limit
         recent_deltas = deltavip.sort_values('update_time', ascending=False).head(limit)
         
-        # Get distinct update times for efficient lookup
-        distinct_times = sorted(deltavip['update_time'].unique())
-        distinct_times_list = list(distinct_times)
+        # Get distinct update times for efficient lookup (no need for list conversion)
+        distinct_times_list = sorted(deltavip['update_time'].unique())
         
         # Create a mapping of update_time -> prev_update_time
         prev_time_map = {}
@@ -2296,23 +2355,26 @@ def get_vip_deltas():
             else:
                 prev_time_map[current_time] = current_time
         
-        # Build delta list with calculated previous update times
+        # Build delta list with calculated previous update times using itertuples
         deltas = []
-        for idx, row in recent_deltas.iterrows():
-            current_time = row['update_time']
+        for row in recent_deltas.itertuples(index=False):
+            current_time = row.update_time
             prev_update_time = prev_time_map.get(current_time, current_time)
             
             deltas.append({
-                'name': row['name'],
-                'world': row['world'],
-                'delta_exp': int(row['delta_exp']),
-                'delta_online': int(row['delta_online']),
+                'name': row.name,
+                'world': row.world,
+                'delta_exp': int(row.delta_exp),
+                'delta_online': int(row.delta_online),
                 'update_time': current_time.isoformat(),
                 'prev_update_time': prev_update_time.isoformat(),
-                'date': row['date']
+                'date': row.date
             })
         
-        return jsonify({'deltas': deltas})
+        response = jsonify({'deltas': deltas})
+        del deltavip, recent_deltas, distinct_times_list, prev_time_map, deltas
+        gc.collect()
+        return response
     except Exception as e:
         log_console(f"Error getting VIP deltas: {str(e)}", "ERROR")
         return jsonify({'error': str(e)}), 500
@@ -2527,7 +2589,7 @@ def get_vip_graph():
             hovermode='x unified'
         )
         
-        return jsonify({
+        result = jsonify({
             'success': True,
             'graph_data': fig.to_json(),
             'stats': {
@@ -2539,6 +2601,9 @@ def get_vip_graph():
                 'updates': len(vip_data)
             }
         })
+        del vip_data, fig, time_labels, compressed_exp, compressed_online, compressed_online_display, time_diffs
+        gc.collect()
+        return result
     except Exception as e:
         log_console(f"Error generating VIP graph: {str(e)}", "ERROR")
         return jsonify({'success': False, 'error': str(e)}), 500
