@@ -7,6 +7,7 @@ let consoleEventSource = null;
 let consolePaused = false;
 let deltasByDate = new Map();
 let deltaIds = new Set(); // Track unique deltas to prevent duplicates
+let currentFilters = { world: 'Auroria', guild: 'Ascended Auroria' }; // Global filters
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
@@ -14,6 +15,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 async function initializeApp() {
+    await loadFiltersConfig(); // Load available worlds and guilds
     await loadPlayers();
     await loadDateRange();
     await loadTopPlayers();
@@ -28,6 +30,9 @@ async function initializeApp() {
 
 // Setup event listeners
 function setupEventListeners() {
+    // Global filters
+    document.getElementById('applyFilters').addEventListener('click', applyFilters);
+    
     // Dashboard tab
     document.getElementById('playerSearch').addEventListener('input', filterPlayers);
     document.getElementById('generateVisualization').addEventListener('click', generateVisualization);
@@ -57,10 +62,104 @@ function setupEventListeners() {
     document.getElementById('uploadExps').addEventListener('change', handleExpsUpload);
 }
 
+// Load filters configuration (worlds and guilds)
+async function loadFiltersConfig() {
+    try {
+        const response = await fetch('/api/scraping-config');
+        const config = await response.json();
+        
+        const worldFilter = document.getElementById('worldFilter');
+        const guildFilter = document.getElementById('guildFilter');
+        
+        // Get unique worlds and guilds
+        const worlds = new Set();
+        const guildsByWorld = {};
+        
+        config.forEach(item => {
+            worlds.add(item.world);
+            if (!guildsByWorld[item.world]) {
+                guildsByWorld[item.world] = [];
+            }
+            guildsByWorld[item.world].push(...item.guilds);
+        });
+        
+        // Populate world dropdown
+        worldFilter.innerHTML = '';
+        Array.from(worlds).sort().forEach(world => {
+            const option = document.createElement('option');
+            option.value = world;
+            option.textContent = world;
+            if (world === currentFilters.world) {
+                option.selected = true;
+            }
+            worldFilter.appendChild(option);
+        });
+        
+        // Update guild dropdown based on selected world
+        updateGuildFilter(guildsByWorld);
+        
+        // Listen for world changes to update guild options
+        worldFilter.addEventListener('change', () => {
+            updateGuildFilter(guildsByWorld);
+        });
+        
+        window.guildsByWorld = guildsByWorld; // Store for later use
+    } catch (error) {
+        console.error('Failed to load filters config:', error);
+    }
+}
+
+function updateGuildFilter(guildsByWorld) {
+    const worldFilter = document.getElementById('worldFilter');
+    const guildFilter = document.getElementById('guildFilter');
+    const selectedWorld = worldFilter.value;
+    
+    const guilds = guildsByWorld[selectedWorld] || [];
+    
+    guildFilter.innerHTML = '';
+    guilds.forEach(guild => {
+        const option = document.createElement('option');
+        option.value = guild;
+        option.textContent = guild;
+        if (guild === currentFilters.guild && guilds.includes(currentFilters.guild)) {
+            option.selected = true;
+        }
+        guildFilter.appendChild(option);
+    });
+}
+
+// Apply filters
+async function applyFilters() {
+    const worldFilter = document.getElementById('worldFilter');
+    const guildFilter = document.getElementById('guildFilter');
+    
+    currentFilters.world = worldFilter.value;
+    currentFilters.guild = guildFilter.value;
+    
+    // Reload all data with new filters
+    await loadPlayers();
+    await loadTopPlayers();
+    await loadRecentUpdates();
+    await loadDeltas();
+    
+    // Clear current visualization
+    selectedPlayers = [];
+    renderSelectedPlayers();
+    document.getElementById('graphDiv').innerHTML = '<p>Select players and click "Generate Visualization" to view data</p>';
+    document.getElementById('statsTable').innerHTML = '';
+    document.getElementById('comparisonTable').innerHTML = '';
+    
+    showSuccess(`Filters applied: ${currentFilters.world} - ${currentFilters.guild}`);
+}
+
 // Load players from API
 async function loadPlayers() {
     try {
-        const response = await fetch('/api/players');
+        const params = new URLSearchParams({
+            world: currentFilters.world,
+            guild: currentFilters.guild
+        });
+        const response = await fetch(`/api/players?${params}`);
         allPlayers = await response.json();
         renderPlayerList(allPlayers);
     } catch (error) {
@@ -71,7 +170,11 @@ async function loadPlayers() {
 // Load available date range
 async function loadDateRange() {
     try {
-        const response = await fetch('/api/date-range');
+        const params = new URLSearchParams({
+            world: currentFilters.world,
+            guild: currentFilters.guild
+        });
+        const response = await fetch(`/api/date-range?${params}`);
         dateRange = await response.json();
         
         if (dateRange.min && dateRange.max) {
@@ -185,6 +288,9 @@ async function generateVisualization() {
             
             // Render comparison
             renderComparison(data.comparison);
+            
+            // Load player details for all selected players
+            await loadDashboardPlayerDetails(selectedPlayers);
         } else {
             showError(data.error || 'Failed to generate visualization');
         }
@@ -193,6 +299,28 @@ async function generateVisualization() {
     } finally {
         hideLoading();
     }
+}
+
+async function loadDashboardPlayerDetails(playerNames) {
+    const dashboardSection = document.getElementById('playerDetailsDashboard');
+    const dashboardPlayerName = document.getElementById('dashboardPlayerName');
+    const loadingEl = document.getElementById('dashboardDetailsLoading');
+    const contentEl = document.getElementById('dashboardDetailsContent');
+    
+    if (playerNames.length === 0) {
+        dashboardSection.style.display = 'none';
+        return;
+    }
+    
+    dashboardSection.style.display = 'block';
+    
+    // If multiple players selected, show the first one
+    // User can cycle through by selecting different players
+    const playerName = playerNames[0];
+    dashboardPlayerName.textContent = `📋 ${playerName}`;
+    
+    // Load details with dashboard context
+    await loadPlayerDetails(playerName, 'dashboard');
 }
 
 // Render comparison data
@@ -426,6 +554,9 @@ async function checkScraperStatus() {
             lastCheckTime.textContent = new Date(data.last_check).toLocaleString();
         }
         
+        // Load world status data
+        await loadWorldStatus();
+        
         if (data.running) {
             indicator.className = 'status-indicator running';
             
@@ -465,6 +596,70 @@ async function checkScraperStatus() {
         console.error('Failed to check scraper status:', error);
     }
 }
+
+// Load world status data
+async function loadWorldStatus() {
+    try {
+        const response = await fetch('/api/status-data');
+        if (!response.ok) {
+            // Data not available yet
+            return;
+        }
+        
+        const data = await response.json();
+        const worldStatusContent = document.getElementById('worldStatusContent');
+        const fetchTimeElement = document.getElementById('fetchTime');
+        
+        // Update fetch time
+        if (data.fetch_time) {
+            const fetchDate = new Date(data.fetch_time);
+            fetchTimeElement.textContent = fetchDate.toLocaleString();
+        }
+        
+        // Render world status
+        if (data.worlds && Object.keys(data.worlds).length > 0) {
+            let html = '';
+            
+            // Sort worlds alphabetically
+            const sortedWorlds = Object.keys(data.worlds).sort();
+            
+            for (const worldName of sortedWorlds) {
+                const worldData = data.worlds[worldName];
+                
+                html += `<div class="world-status-item">`;
+                html += `<div class="world-name">🌍 ${worldName}</div>`;
+                html += `<div class="world-routines">`;
+                
+                for (const routine of worldData) {
+                    const statusClass = routine.status.toLowerCase() === 'atualizado' ? 'atualizado' : 
+                                       routine.status.toLowerCase() === 'ok' ? 'ok' : 'outdated';
+                    
+                    const updateTime = routine['last update'] ? 
+                        new Date(routine['last update']).toLocaleTimeString() : '--';
+                    
+                    html += `
+                        <div class="routine-row">
+                            <div class="routine-name">${routine.rotina}</div>
+                            <div class="routine-time">${updateTime}</div>
+                            <div class="routine-status ${statusClass}">${routine.status}</div>
+                        </div>
+                    `;
+                }
+                
+                html += `</div></div>`;
+            }
+            
+            worldStatusContent.innerHTML = html;
+        } else {
+            worldStatusContent.innerHTML = '<p style="text-align: center; color: #6c757d;">No world data available</p>';
+        }
+    } catch (error) {
+        console.error('Failed to load world status:', error);
+        const worldStatusContent = document.getElementById('worldStatusContent');
+        worldStatusContent.innerHTML = '<p style="text-align: center; color: #dc3545;">Error loading world status</p>';
+    }
+}
+
 
 // Console stream
 function connectConsoleStream() {
@@ -648,6 +843,9 @@ async function showPlayerGraph(playerName) {
             const graphData = JSON.parse(data.graph);
             Plotly.newPlot('modalGraphDiv', graphData.data, graphData.layout, {responsive: true});
             document.getElementById('playerModal').classList.add('active');
+            
+            // Load player details
+            await loadPlayerDetails(playerName, 'modal');
         } else {
             showError(data.error || 'Failed to load player graph');
         }
@@ -657,6 +855,506 @@ async function showPlayerGraph(playerName) {
         hideLoading();
     }
 }
+
+async function loadPlayerDetails(playerName, context = 'modal') {
+    const loadingId = context === 'modal' ? 'playerDetailsLoading' : 'dashboardDetailsLoading';
+    const contentId = context === 'modal' ? 'playerDetailsContent' : 'dashboardDetailsContent';
+    
+    const loadingEl = document.getElementById(loadingId);
+    const contentEl = document.getElementById(contentId);
+    
+    loadingEl.style.display = 'flex';
+    contentEl.style.display = 'none';
+    
+    try {
+        const response = await fetch(`/api/player-details/${encodeURIComponent(playerName)}`);
+        const data = await response.json();
+        
+        if (data.success && data.tables.length > 0) {
+            contentEl.innerHTML = renderPlayerDetails(data, context);
+            contentEl.style.display = 'block';
+        } else {
+            contentEl.innerHTML = '<p class="no-data">No detailed data available for this player.</p>';
+            contentEl.style.display = 'block';
+        }
+    } catch (error) {
+        contentEl.innerHTML = `<p class="error">Failed to load player details: ${error.message}</p>`;
+        contentEl.style.display = 'block';
+    } finally {
+        loadingEl.style.display = 'none';
+    }
+}
+
+function renderPlayerDetails(data, context = 'modal') {
+    // Filter out empty tables and tables we don't recognize
+    const validTables = data.tables.filter(table => {
+        if (!table.data || table.data.length === 0) return false;
+        if (!table.columns || table.columns.length === 0) return false;
+        
+        // Only include recognized table types (skip generic "Table X" types)
+        const columns = table.columns;
+        const isRecognized = columns.includes('Killed by') || 
+                           columns.includes('Victim') || 
+                           columns.includes('Online time') || 
+                           columns.includes('Raw XP no dia');
+        return isRecognized;
+    });
+    
+    if (validTables.length === 0) {
+        return '<div class="no-data">No player details available for this player.</div>';
+    }
+    
+    let html = '<div class="player-details-container">';
+    
+    html += '<div class="player-details-tabs">';
+    
+    validTables.forEach((table, index) => {
+        const tableTitle = getTableTitle(table, index);
+        const tabId = context === 'modal' ? `switchDetailTab(${index})` : `switchDashboardTab(${index})`;
+        html += `<button class="detail-tab-btn${index === 0 ? ' active' : ''}" onclick="${tabId}">${tableTitle}</button>`;
+    });
+    
+    html += '</div>';
+    html += '<div class="player-details-tables">';
+    
+    validTables.forEach((table, index) => {
+        html += `<div class="detail-table-container${index === 0 ? ' active' : ''}" id="${context}DetailTable${index}">`;
+        
+        // Table section
+        html += '<div class="table-section">';
+        html += renderTable(table);
+        html += '</div>';
+        
+        // Chart section (if applicable)
+        if (isXPTable(table)) {
+            html += '<div class="chart-section-wrapper">';
+            html += '<div class="chart-section">';
+            html += '<h3>📊 Online Time vs EXP Analysis</h3>';
+            const chartId = `${context}OnlineXpChart${index}`;
+            html += `<div id="${chartId}" class="online-xp-chart"></div>`;
+            html += '</div>';
+            html += '</div>';
+            setTimeout(() => renderOnlineXPChart(table, chartId), 100);
+        }
+        
+        html += '</div>';
+    });
+    
+    html += '</div>';
+    html += '</div>';
+    
+    // Render combined overview for modal multi-graph tab
+    if (context === 'modal') {
+        setTimeout(() => renderCombinedOverview(data, 'modalMultiGraphDiv'), 100);
+    }
+    // Render combined overview for dashboard
+    if (context === 'dashboard') {
+        setTimeout(() => renderCombinedOverview(data, 'dashboardMultiGraphDiv'), 100);
+    }
+    
+    return html;
+}
+
+function getTableTitle(table, index) {
+    const columns = table.columns;
+    if (columns.includes('Killed by')) return '💀 Deaths';
+    if (columns.includes('Victim')) return '⚔️ Kills';
+    if (columns.includes('Online time')) return '⏰ Online Time';
+    if (columns.includes('Raw XP no dia')) return '📈 Daily XP';
+    return `Table ${index + 1}`;
+}
+
+function isXPTable(table) {
+    return table.columns.includes('Raw XP no dia') && table.columns.includes('Online time');
+}
+
+function renderTable(table) {
+    let html = '<div class="detail-table-wrapper"><table class="detail-data-table">';
+    html += '<thead><tr>';
+    table.columns.forEach(col => {
+        html += `<th>${col}</th>`;
+    });
+    html += '</tr></thead><tbody>';
+    
+    table.data.forEach(row => {
+        html += '<tr>';
+        row.forEach(cell => {
+            html += `<td>${cell}</td>`;
+        });
+        html += '</tr>';
+    });
+    
+    html += '</tbody></table></div>';
+    return html;
+}
+
+function renderOnlineXPChart(table, index) {
+    // Extract online time and XP data
+    const dateCol = table.columns.indexOf('Date') >= 0 ? 'Date' : table.columns.indexOf('Data') >= 0 ? 'Data' : null;
+    const onlineCol = table.columns.indexOf('Online time');
+    const xpCol = table.columns.indexOf('Raw XP no dia');
+    
+    if (dateCol === null || onlineCol < 0 || xpCol < 0) return;
+    
+    const dates = [];
+    const onlineTimes = [];
+    const xpValues = [];
+    
+    table.data.forEach(row => {
+        dates.push(row[table.columns.indexOf(dateCol === 'Date' ? 'Date' : 'Data')]);
+        
+        // Parse online time (e.g., "2h 15m" to minutes)
+        const onlineStr = row[onlineCol];
+        const hours = onlineStr.match(/(\\d+)h/);
+        const minutes = onlineStr.match(/(\\d+)m/);
+        const totalMinutes = (hours ? parseInt(hours[1]) * 60 : 0) + (minutes ? parseInt(minutes[1]) : 0);
+        onlineTimes.push(totalMinutes);
+        
+        // Parse XP (remove dots and convert)
+        const xpStr = row[xpCol].replace(/\\./g, '');
+        xpValues.push(parseInt(xpStr));
+    });
+    
+    // Create dual-axis chart
+    const trace1 = {
+        x: dates,
+        y: onlineTimes,
+        name: 'Online Time (min)',
+        type: 'bar',
+        yaxis: 'y',
+        marker: { color: 'rgba(147, 51, 234, 0.6)' }
+    };
+    
+    const trace2 = {
+        x: dates,
+        y: xpValues,
+        name: 'XP Gained',
+        type: 'scatter',
+        mode: 'lines+markers',
+        yaxis: 'y2',
+        line: { color: 'rgb(255, 127, 14)', width: 3 },
+        marker: { size: 8 }
+    };
+    
+    const layout = {
+        title: 'Online Time vs XP Efficiency',
+        xaxis: { title: 'Date', type: 'category', tickangle: -45 },
+        yaxis: { title: 'Online Time (minutes)', side: 'left' },
+        yaxis2: {
+            title: 'XP Gained',
+            overlaying: 'y',
+            side: 'right'
+        },
+        height: 350,
+        showlegend: true,
+        template: 'plotly_white',
+        margin: { l: 60, r: 60, t: 50, b: 100 }
+    };
+    
+    Plotly.newPlot(chartId, [trace1, trace2], layout, {responsive: true});
+}
+
+function renderCombinedOverview(data, chartElementId = 'combinedOverviewChart') {
+    if (!data || !data.tables || data.tables.length === 0) {
+        document.getElementById(chartElementId).innerHTML = '<p class="no-data">No data available for overview</p>';
+        return;
+    }
+    
+    // Aggregate all data by datetime
+    const timeSeriesData = new Map(); // key: datetime string, value: {rawXP, onlineMinutes, level, deaths, kills}
+    
+    // Process all tables
+    data.tables.forEach(table => {
+        if (!table.data || table.data.length === 0) return;
+        
+        const cols = table.columns;
+        
+        // Find date/time columns
+        let dateColIdx = -1;
+        let timeColIdx = -1;
+        
+        for (let i = 0; i < cols.length; i++) {
+            const col = cols[i].toLowerCase();
+            if (col === 'date' || col === 'data') dateColIdx = i;
+            if (col === 'time' || col === 'hora') timeColIdx = i;
+        }
+        
+        // Process each row
+        table.data.forEach(row => {
+            if (dateColIdx < 0) return; // No date column, skip
+            
+            const dateStr = row[dateColIdx];
+            let datetimeKey;
+            
+            if (timeColIdx >= 0 && row[timeColIdx]) {
+                // Has time, use date + time
+                datetimeKey = `${dateStr} ${row[timeColIdx]}`;
+            } else {
+                // No time, use just date (all times of that day will be aggregated)
+                datetimeKey = dateStr;
+            }
+            
+            // Initialize entry if doesn't exist
+            if (!timeSeriesData.has(datetimeKey)) {
+                timeSeriesData.set(datetimeKey, {
+                    datetime: datetimeKey,
+                    rawXP: 0,
+                    onlineMinutes: 0,
+                    level: 0,
+                    deaths: 0,
+                    kills: 0
+                });
+            }
+            
+            const entry = timeSeriesData.get(datetimeKey);
+            
+            // Parse data based on column names
+            cols.forEach((colName, idx) => {
+                const value = row[idx];
+                const colLower = colName.toLowerCase();
+                
+                // Raw XP
+                if (colLower.includes('raw xp') || colLower.includes('xp no dia')) {
+                    const xpStr = String(value).replace(/\./g, '').replace(/,/g, '');
+                    const xp = parseInt(xpStr) || 0;
+                    entry.rawXP += xp;
+                }
+                
+                // Online time
+                if (colLower.includes('online time') || colLower.includes('tempo online')) {
+                    const onlineStr = String(value);
+                    const hours = onlineStr.match(/(\d+)h/);
+                    const minutes = onlineStr.match(/(\d+)m/);
+                    const totalMin = (hours ? parseInt(hours[1]) * 60 : 0) + (minutes ? parseInt(minutes[1]) : 0);
+                    entry.onlineMinutes += totalMin;
+                }
+                
+                // Level
+                if (colLower === 'level' || colLower === 'nível') {
+                    const level = parseInt(value) || 0;
+                    entry.level = Math.max(entry.level, level); // Take max level
+                }
+                
+                // Deaths
+                if (colLower.includes('killed by') || colLower.includes('morto por')) {
+                    entry.deaths++;
+                }
+                
+                // Kills
+                if (colLower === 'victim' || colLower === 'vítima') {
+                    entry.kills++;
+                }
+            });
+        });
+    });
+    
+    if (timeSeriesData.size === 0) {
+        document.getElementById(chartElementId).innerHTML = '<p class="no-data">No data available for overview</p>';
+        return;
+    }
+    
+    // Convert to arrays and sort by datetime
+    const sortedEntries = Array.from(timeSeriesData.values()).sort((a, b) => {
+        // Parse datetime for proper sorting
+        const parseDateTime = (dtStr) => {
+            // Try to parse various date formats
+            // Format: "DD/MM/YYYY HH:MM:SS" or "DD/MM/YYYY"
+            const parts = dtStr.split(' ');
+            const datePart = parts[0];
+            const timePart = parts[1] || '00:00:00';
+            
+            const dateParts = datePart.split('/');
+            if (dateParts.length >= 3) {
+                const day = dateParts[0];
+                const month = dateParts[1];
+                const year = dateParts[2];
+                return new Date(`${year}-${month}-${day} ${timePart}`).getTime();
+            }
+            
+            // Fallback to native parsing
+            return new Date(dtStr).getTime();
+        };
+        
+        return parseDateTime(a.datetime) - parseDateTime(b.datetime);
+    });
+    
+    const datetimes = sortedEntries.map(e => e.datetime);
+    const rawXPs = sortedEntries.map(e => e.rawXP);
+    const onlineTimes = sortedEntries.map(e => e.onlineMinutes);
+    const levels = sortedEntries.map(e => e.level);
+    const deaths = sortedEntries.map(e => e.deaths);
+    const kills = sortedEntries.map(e => e.kills);
+    
+    // Create traces
+    const traces = [];
+    
+    // Raw XP (Line on Y1)
+    if (rawXPs.some(v => v > 0)) {
+        traces.push({
+            x: datetimes,
+            y: rawXPs,
+            name: 'Raw XP',
+            type: 'scatter',
+            mode: 'lines+markers',
+            yaxis: 'y1',
+            line: { color: '#ff7f0e', width: 2 },
+            marker: { size: 6 }
+        });
+    }
+    
+    // Online Time (Bar on Y2)
+    if (onlineTimes.some(v => v > 0)) {
+        traces.push({
+            x: datetimes,
+            y: onlineTimes,
+            name: 'Online Time (min)',
+            type: 'bar',
+            yaxis: 'y2',
+            marker: { color: 'rgba(147, 51, 234, 0.6)' }
+        });
+    }
+    
+    // Level (Line on Y3)
+    if (levels.some(v => v > 0)) {
+        traces.push({
+            x: datetimes,
+            y: levels,
+            name: 'Level',
+            type: 'scatter',
+            mode: 'lines+markers',
+            yaxis: 'y3',
+            line: { color: '#00bcd4', width: 2 },
+            marker: { size: 6 }
+        });
+    }
+    
+    // Deaths (Bar on Y4)
+    if (deaths.some(v => v > 0)) {
+        traces.push({
+            x: datetimes,
+            y: deaths,
+            name: 'Deaths',
+            type: 'bar',
+            yaxis: 'y4',
+            marker: { color: 'rgba(244, 67, 54, 0.6)' }
+        });
+    }
+    
+    // Kills (Bar on Y4)
+    if (kills.some(v => v > 0)) {
+        traces.push({
+            x: datetimes,
+            y: kills,
+            name: 'Kills',
+            type: 'bar',
+            yaxis: 'y4',
+            marker: { color: 'rgba(76, 175, 80, 0.6)' }
+        });
+    }
+    
+    if (traces.length === 0) {
+        document.getElementById(chartElementId).innerHTML = '<p class="no-data">No data available for overview</p>';
+        return;
+    }
+    
+    const layout = {
+        title: 'Combined Player Overview',
+        xaxis: {
+            title: 'Date/Time',
+            type: 'category',
+            tickangle: -45
+        },
+        yaxis: {
+            title: 'Raw XP',
+            titlefont: { color: '#ff7f0e' },
+            tickfont: { color: '#ff7f0e' }
+        },
+        yaxis2: {
+            title: 'Online Time (min)',
+            titlefont: { color: '#9333ea' },
+            tickfont: { color: '#9333ea' },
+            overlaying: 'y',
+            side: 'right'
+        },
+        yaxis3: {
+            title: 'Level',
+            titlefont: { color: '#00bcd4' },
+            tickfont: { color: '#00bcd4' },
+            anchor: 'free',
+            overlaying: 'y',
+            side: 'left',
+            position: 0.05
+        },
+        yaxis4: {
+            title: 'Deaths/Kills',
+            titlefont: { color: '#777' },
+            tickfont: { color: '#777' },
+            anchor: 'free',
+            overlaying: 'y',
+            side: 'right',
+            position: 0.95
+        },
+        height: 500,
+        showlegend: true,
+        legend: { x: 0.5, y: 1.15, xanchor: 'center', orientation: 'h' },
+        template: 'plotly_white',
+        margin: { l: 80, r: 120, t: 100, b: 100 },
+        barmode: 'group'
+    };
+    
+    Plotly.newPlot(chartElementId, traces, layout, {responsive: true});
+}
+
+function switchDetailTab(tabIndex) {
+    document.querySelectorAll('.detail-tab-btn').forEach((btn, i) => {
+        btn.classList.toggle('active', i === tabIndex);
+    });
+    document.querySelectorAll('[id^="modalDetailTable"]').forEach((table, i) => {
+        table.classList.toggle('active', i === tabIndex);
+    });
+}
+
+function switchDashboardTab(tabIndex) {
+    document.querySelectorAll('.detail-tab-btn').forEach((btn, i) => {
+        btn.classList.toggle('active', i === tabIndex);
+    });
+    document.querySelectorAll('[id^="dashboardDetailTable"]').forEach((table, i) => {
+        table.classList.toggle('active', i === tabIndex);
+    });
+}
+
+function switchModalMainTab(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('.modal-main-tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    event.target.classList.add('active');
+    
+    // Update tab content
+    document.querySelectorAll('.modal-tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`modal-${tabName}`).classList.add('active');
+}
+
+function switchDashboardMainTab(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('.dashboard-main-tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    event.target.classList.add('active');
+    
+    // Update tab content
+    document.querySelectorAll('.dashboard-tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`dashboard-${tabName}`).classList.add('active');
+}
+
+window.switchDetailTab = switchDetailTab;
+window.switchDashboardTab = switchDashboardTab;
+window.switchModalMainTab = switchModalMainTab;
+window.switchDashboardMainTab = switchDashboardMainTab;
 
 function closePlayerModal() {
     document.getElementById('playerModal').classList.remove('active');
@@ -678,7 +1376,12 @@ window.closePlayerModal = closePlayerModal;
 // Delta Polling
 async function loadDeltas() {
     try {
-        const response = await fetch('/api/delta?limit=100');
+        const params = new URLSearchParams({
+            limit: 100,
+            world: currentFilters.world,
+            guild: currentFilters.guild
+        });
+        const response = await fetch(`/api/delta?${params}`);
         const data = await response.json();
         
         if (data.deltas && data.deltas.length > 0) {

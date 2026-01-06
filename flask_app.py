@@ -3,6 +3,7 @@ import sys
 import threading
 import time
 import queue
+import json
 from io import StringIO
 from flask import Flask, render_template, jsonify, request, Response
 import pandas as pd
@@ -17,9 +18,14 @@ import traceback
 
 app = Flask(__name__)
 
-# Upload password from environment variable
+# Configuration from environment variables
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
-
+DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
+DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
+TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
+DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
+DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
 
 
 # Error Handlers
@@ -140,17 +146,24 @@ class Database:
     Database abstraction layer for storing player EXP data.
     Currently uses CSV files, designed to be easily swappable with SQLite.
     """
-    def __init__(self, folder="//var//data/"):
+    def __init__(self, folder=None):
+        if folder is None:
+            folder = DATA_FOLDER
         self.folder = folder
         self.exps_file = f"{folder}/exps.csv"
         self.deltas_file = f"{folder}/deltas.csv"
         self.reset_date_file = f"{folder}/last_reset.txt"
+        self.status_data_file = f"{folder}/status_data.json"
+        self.scraping_data_file = f"{folder}/scraping_data.json"
         self.lock = threading.Lock()
         self.reset_done_today = False  # Flag to avoid multiple reset checks
         
         # Ensure data directory exists
         if not os.path.exists(folder):
             os.makedirs(folder)
+        
+        # Initialize scraping config if it doesn't exist
+        self._initialize_scraping_config()
     
     def _read_exps(self):
         """Read exps table from storage"""
@@ -158,9 +171,20 @@ class Database:
             df = pd.read_csv(self.exps_file)
             df['last update'] = pd.to_datetime(df['last update'])
             df['exp'] = df['exp'].astype(int)
+            
+            # Migrate legacy data: add world and guild columns if missing
+            if 'world' not in df.columns:
+                df['world'] = DEFAULT_WORLD
+                log_console(f"Migrated exps: added 'world' column with default '{DEFAULT_WORLD}'", "INFO")
+            if 'guild' not in df.columns:
+                df['guild'] = DEFAULT_GUILD
+                log_console(f"Migrated exps: added 'guild' column with default '{DEFAULT_GUILD}'", "INFO")
+                # Save migrated data
+                self._write_exps(df)
+            
             return df
         except FileNotFoundError:
-            return pd.DataFrame(columns=['name', 'exp', 'last update'])
+            return pd.DataFrame(columns=['name', 'exp', 'last update', 'world', 'guild'])
     
     def _read_deltas(self):
         """Read deltas table from storage"""
@@ -168,9 +192,20 @@ class Database:
             df = pd.read_csv(self.deltas_file)
             df['update time'] = pd.to_datetime(df['update time'])
             df['deltaexp'] = df['deltaexp'].astype(int)
+            
+            # Migrate legacy data: add world and guild columns if missing
+            if 'world' not in df.columns:
+                df['world'] = DEFAULT_WORLD
+                log_console(f"Migrated deltas: added 'world' column with default '{DEFAULT_WORLD}'", "INFO")
+            if 'guild' not in df.columns:
+                df['guild'] = DEFAULT_GUILD
+                log_console(f"Migrated deltas: added 'guild' column with default '{DEFAULT_GUILD}'", "INFO")
+                # Save migrated data
+                self._write_deltas(df)
+            
             return df
         except FileNotFoundError:
-            return pd.DataFrame(columns=['name', 'deltaexp', 'update time'])
+            return pd.DataFrame(columns=['name', 'deltaexp', 'update time', 'world', 'guild'])
     
     def _write_exps(self, df):
         """Write exps table to storage"""
@@ -179,6 +214,67 @@ class Database:
     def _write_deltas(self, df):
         """Write deltas table to storage"""
         df.to_csv(self.deltas_file, index=False)
+    
+    def _read_status_data(self):
+        """Read status data from JSON file"""
+        try:
+            with open(self.status_data_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+    
+    def _write_status_data(self, data):
+        """Write status data to JSON file"""
+        with open(self.status_data_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    
+    def get_status_data(self):
+        """Get status data with lock"""
+        with self.lock:
+            return self._read_status_data()
+    
+    def save_status_data(self, data):
+        """Save status data with lock"""
+        with self.lock:
+            self._write_status_data(data)
+    
+    def _initialize_scraping_config(self):
+        """Initialize scraping config with default if not exists"""
+        if not os.path.exists(self.scraping_data_file):
+            default_config = [
+                {
+                    "world": DEFAULT_WORLD,
+                    "guilds": [DEFAULT_GUILD]
+                }
+            ]
+            with open(self.scraping_data_file, 'w', encoding='utf-8') as f:
+                json.dump(default_config, f, indent=2, ensure_ascii=False)
+            log_console(f"Created default scraping config: {default_config}", "INFO")
+    
+    def get_scraping_config(self):
+        """Get scraping configuration"""
+        try:
+            with open(self.scraping_data_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                # Validate config structure
+                if not isinstance(config, list):
+                    raise ValueError("Config must be an array")
+                for item in config:
+                    if 'world' not in item or 'guilds' not in item:
+                        raise ValueError("Each config item must have 'world' and 'guilds' fields")
+                    if not isinstance(item['guilds'], list):
+                        raise ValueError("'guilds' must be an array")
+                return config
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+            log_console(f"Error reading scraping config: {str(e)}, using default", "WARNING")
+            self._initialize_scraping_config()
+            return self.get_scraping_config()
+    
+    def save_scraping_config(self, config):
+        """Save scraping configuration"""
+        with open(self.scraping_data_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        log_console(f"Scraping config updated: {len(config)} world(s)", "INFO")
 
     def load(self, folder=None):
         """Initialize database (for compatibility, now reads on-demand)"""
@@ -192,6 +288,18 @@ class Database:
         with self.lock:
             exps = self._read_exps()
             deltas = self._read_deltas()
+            
+            # Check and fix duplicates in deltas
+            if not deltas.empty:
+                duplicates = deltas[deltas.duplicated(subset=['name', 'update time'], keep=False)]
+                if not duplicates.empty:
+                    original_count = len(deltas)
+                    # Keep last occurrence (most recent in file)
+                    deltas = deltas.drop_duplicates(subset=['name', 'update time'], keep='last')
+                    removed = original_count - len(deltas)
+                    log_console(f"Found and removed {removed} duplicate deltas on load", "WARNING")
+                    # Save cleaned data
+                    self._write_deltas(deltas)
         
         log_console(f"Database initialized: {len(exps)} players, {len(deltas)} deltas")
 
@@ -219,41 +327,88 @@ class Database:
                 name = row['name']
                 exp = int(row['exp'])
                 last_update = row['last update']
+                world = row.get('world', DEFAULT_WORLD)
+                guild = row.get('guild', DEFAULT_GUILD)
 
                 if name in exps['name'].values:
                     # Existing player - calculate delta
                     prev_exp = exps[exps['name'] == name]['exp'].values[0]
                     deltaexp = exp - prev_exp
                     if deltaexp != 0:
-                        new_delta = {'name': name, 'deltaexp': deltaexp, 'update time': update_time}
-                        log_console(f"EXP gain: {name} +{deltaexp}")
-                        deltas.loc[len(deltas)] = new_delta
+                        # Check if delta already exists for this player and update time
+                        existing_delta_mask = (deltas['name'] == name) & (deltas['update time'] == update_time)
+                        existing_delta = deltas[existing_delta_mask]
+                        
+                        if existing_delta.empty:
+                            new_delta = {
+                                'name': name, 
+                                'deltaexp': deltaexp, 
+                                'update time': update_time,
+                                'world': world,
+                                'guild': guild
+                            }
+                            log_console(f"EXP gain: {name} +{deltaexp} ({world} - {guild})")
+                            deltas.loc[len(deltas)] = new_delta
+                        else:
+                            # Duplicate found - update with latest value
+                            existing_exp = existing_delta['deltaexp'].values[0]
+                            deltas.loc[existing_delta_mask, 'deltaexp'] = deltaexp
+                            log_console(f"Updated duplicate for {name} at {update_time}: {existing_exp} -> {deltaexp} (latest)", "INFO")
                         
                         # Broadcast to delta stream
                         delta_queue.put({
                             'name': name,
                             'deltaexp': int(deltaexp),
                             'update_time': update_time.isoformat(),
-                            'prev_update_time': prev_update_time.isoformat()
+                            'prev_update_time': prev_update_time.isoformat(),
+                            'world': world,
+                            'guild': guild
                         })
                     
                     # Update existing player
                     exps.loc[exps['name'] == name, 'exp'] = exp
                     exps.loc[exps['name'] == name, 'last update'] = last_update
+                    exps.loc[exps['name'] == name, 'world'] = world
+                    exps.loc[exps['name'] == name, 'guild'] = guild
                 else:
                     # New player
-                    new_entry = {'name': name, 'exp': exp, 'last update': last_update}
+                    new_entry = {
+                        'name': name, 
+                        'exp': exp, 
+                        'last update': last_update,
+                        'world': world,
+                        'guild': guild
+                    }
                     exps.loc[len(exps)] = new_entry
-                    new_delta = {'name': name, 'deltaexp': exp, 'update time': update_time}
-                    deltas.loc[len(deltas)] = new_delta
-                    log_console(f"New player: {name} with {exp} EXP")
+                    
+                    # Check if delta already exists for this player and update time
+                    existing_delta_mask = (deltas['name'] == name) & (deltas['update time'] == update_time)
+                    existing_delta = deltas[existing_delta_mask]
+                    
+                    if existing_delta.empty:
+                        new_delta = {
+                            'name': name, 
+                            'deltaexp': exp, 
+                            'update time': update_time,
+                            'world': world,
+                            'guild': guild
+                        }
+                        deltas.loc[len(deltas)] = new_delta
+                        log_console(f"New player: {name} with {exp} EXP ({world} - {guild})")
+                    else:
+                        # Duplicate found - update with latest value
+                        existing_exp = existing_delta['deltaexp'].values[0]
+                        deltas.loc[existing_delta_mask, 'deltaexp'] = exp
+                        log_console(f"Updated duplicate for new player {name} at {update_time}: {existing_exp} -> {exp} (latest)", "INFO")
                     
                     # Broadcast to delta stream
                     delta_queue.put({
                         'name': name,
                         'deltaexp': int(exp),
                         'update_time': update_time.isoformat(),
-                        'prev_update_time': prev_update_time.isoformat()
+                        'prev_update_time': prev_update_time.isoformat(),
+                        'world': world,
+                        'guild': guild
                     })
             
             # Write changes to storage immediately
@@ -281,15 +436,15 @@ class Database:
             return False
         
         with self.lock:
-            now = datetime.now() - timedelta(hours=3)  # Apply timezone offset
+            now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)  # Apply timezone offset
             today_str = now.strftime("%Y-%m-%d")
             
             # Convert update_time to datetime if it's not already
             if isinstance(update_time, str):
                 update_time = pd.to_datetime(update_time)
             
-            # Check if update is after 10:02 AM
-            reset_time = now.replace(hour=10, minute=2, second=0, microsecond=0)
+            # Check if update is after daily reset time
+            reset_time = now.replace(hour=DAILY_RESET_HOUR, minute=DAILY_RESET_MINUTE, second=0, microsecond=0)
             update_datetime = update_time
             if isinstance(update_datetime, pd.Timestamp):
                 update_datetime = update_datetime.to_pydatetime()
@@ -338,10 +493,27 @@ class Database:
 
 # Logging function
 def log_console(message, level="INFO"):
-    timestamp = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = (datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}] [{level}] {message}"
     print(log_entry)
     console_queue.put(log_entry)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # Scraper functions from notebook
@@ -382,6 +554,62 @@ def extract_tables(soup):
     return dataframes
 
 
+def scrape_player_data(name):
+    """Complete pipeline to scrape player data from rubinothings.com.br"""
+    result = {
+        'name': name,
+        'tables': [],
+        'response_status': None,
+        'success': False
+    }
+    
+    url = "https://rubinothings.com.br/player"
+    params = {"name": name}
+    
+    # Try direct fetch first
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
+            log_console(f"Direct fetch failed for '{name}' with status {response.status_code}, trying proxies...", "WARNING")
+            # Build URL with params for proxy attempt
+            url_with_params = f"{url}?name={name.replace(' ', '+')}"
+            response = get_multiple(url_with_params, pp)
+    except Exception as e:
+        log_console(f"Direct fetch failed for '{name}': {str(e)}, trying proxies...", "WARNING")
+        url_with_params = f"{url}?name={name.replace(' ', '+')}"
+        response = get_multiple(url_with_params, pp)
+    
+    if not response:
+        log_console(f"All requests failed for '{name}'", "ERROR")
+        return result
+    
+    try:
+        result['response_status'] = response.status_code if hasattr(response, 'status_code') else 200
+        
+        if result['response_status'] == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            tables = extract_tables(soup)
+            
+            # Convert DataFrames to dict format for JSON serialization
+            tables_dict = []
+            for df in tables:
+                tables_dict.append({
+                    'columns': df.columns.tolist(),
+                    'data': df.values.tolist()
+                })
+            
+            result['tables'] = tables_dict
+            result['success'] = True
+            log_console(f"Successfully scraped data for '{name}' - Found {len(tables)} tables", "INFO")
+        else:
+            log_console(f"Request failed for '{name}' with status code: {result['response_status']}", "ERROR")
+            
+    except Exception as e:
+        log_console(f"Error parsing player data for '{name}': {str(e)}", "ERROR")
+    
+    return result
+
+
 def parse_datetime(date_str):
     """Parse datetime from Brazilian format"""
     import re
@@ -389,17 +617,21 @@ def parse_datetime(date_str):
         time_part = re.search(r'(\d{2}:\d{2})', date_str)
         if time_part:
             time_str = time_part.group(1)
-            now = datetime.now() - timedelta(hours=3)
+            now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
             date_time = datetime.strptime(f"{now.date()} {time_str}", "%Y-%m-%d %H:%M")
             return pd.to_datetime(date_time)
         else:
-            yesterday = (datetime.now() - timedelta(hours=3)) - timedelta(days=1)
+            yesterday = (datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)) - timedelta(days=1)
             return pd.to_datetime(datetime.strptime(f"{yesterday.date()} 00:00", "%Y-%m-%d %H:%M"))
     return None
 
 
-def get_ranking(world="Auroria", guildname="Ascended Auroria"):
+def get_ranking(world=None, guildname=None):
     """Get ranking from website"""
+    if world is None:
+        world = DEFAULT_WORLD
+    if guildname is None:
+        guildname = DEFAULT_GUILD
     url = f"https://rubinothings.com.br/guild.php?guild={guildname.replace(' ', '+')}&world={world}"
 
     # Try direct fetch first
@@ -420,8 +652,10 @@ def get_ranking(world="Auroria", guildname="Ascended Auroria"):
     return extract_tables(soup)
 
 
-def get_last_status_updates(world="Auroria"):
+def get_last_status_updates(world=None):
     """Get status updates to determine correct scraping timestamp"""
+    if world is None:
+        world = DEFAULT_WORLD
     url = "https://rubinothings.com.br/status"
     
     # Try direct fetch first
@@ -485,67 +719,209 @@ def get_last_status_updates(world="Auroria"):
     return tables_dict
 
 
-def return_last_update(world="Auroria"):
-    """Get the last update time"""
-    df = get_last_status_updates(world)[world]
-    update_time = str(df[df['rotina'] == 'Daily Raw Ranking']['last update'].values[0])
-    return pd.to_datetime(update_time)
+def return_last_update(world=None, save_all_data=True, database=None):
+    """Get the last update time and optionally save all worlds data to JSON"""
+    if world is None:
+        world = DEFAULT_WORLD
+    if save_all_data and database:
+        # Fetch all status data
+        all_status = get_last_status_updates(world)
+        
+        if all_status:
+            # Convert to JSON-serializable format
+            json_data = {
+                "fetch_time": datetime.now().isoformat(),
+                "worlds": {}
+            }
+            
+            for world_name, df in all_status.items():
+                if not df.empty and 'last update' in df.columns:
+                    # Convert DataFrame to dict and handle datetime
+                    world_data = df.to_dict('records')
+                    for record in world_data:
+                        if 'last update' in record and pd.notna(record['last update']):
+                            record['last update'] = pd.to_datetime(record['last update']).isoformat()
+                        else:
+                            record['last update'] = None
+                    json_data["worlds"][world_name] = world_data
+            
+            # Save to JSON file
+            database.save_status_data(json_data)
+            log_console(f"Status data saved for {len(json_data['worlds'])} worlds", "INFO")
+    
+    # Get the specific world's update time
+    status_data = get_last_status_updates(world)
+    if status_data and world in status_data:
+        df = status_data[world]
+        update_time = str(df[df['rotina'] == 'Daily Raw Ranking']['last update'].values[0])
+        return pd.to_datetime(update_time)
+    return None
 
 
-def parse_to_db_formatted(df, last_update):
+def parse_to_db_formatted(df, last_update, world=None, guild=None):
     """Parse ranking data to database format"""
+    if world is None:
+        world = DEFAULT_WORLD
+    if guild is None:
+        guild = DEFAULT_GUILD
     new_df = pd.DataFrame()
     new_df['name'] = df['Jogador']
     new_df['exp'] = df['RAW no período'].str.replace(',', '').str.replace('.', '').astype(int)
     new_df['last update'] = last_update
+    new_df['world'] = world
+    new_df['guild'] = guild
     return new_df
 
 
-def loop_get_rankings(database, world="Auroria", debug=False):
-    """Background loop to continuously fetch rankings"""
+def loop_get_rankings(database, debug=False):
+    """Background loop to continuously fetch rankings from all configured worlds and guilds"""
     database.load()
     global scraper_running, scraper_state
     scraper_running = True
-    last_update = 'na'
-    log_console(f"Starting ranking scraper for {world}")
+    
+    # Track last update per world (worlds update independently)
+    last_updates = {}
+    
+    # Get scraping configuration
+    scraping_config = database.get_scraping_config()
+    log_console(f"Starting ranking scraper for {len(scraping_config)} world(s)")
+    
     ignore_updates=[]
     while scraper_running:
         try:
             with scraper_lock:
                 scraper_state = "checking"
             
-            current_update = return_last_update(world)
+            # Get status data for all worlds to check what's available
+            all_status = get_last_status_updates()
             
-            if last_update == current_update or current_update in ignore_updates:
+            if not all_status:
+                log_console("Failed to get status data, retrying...", "WARNING")
+                with scraper_lock:
+                    scraper_state = "sleeping"
+                time.sleep(60)
+                continue
+            
+            # Save all status data to JSON
+            json_data = {
+                "fetch_time": datetime.now().isoformat(),
+                "worlds": {}
+            }
+            
+            for world_name, df in all_status.items():
+                if not df.empty and 'last update' in df.columns:
+                    world_data = df.to_dict('records')
+                    for record in world_data:
+                        if 'last update' in record and pd.notna(record['last update']):
+                            record['last update'] = pd.to_datetime(record['last update']).isoformat()
+                        else:
+                            record['last update'] = None
+                    json_data["worlds"][world_name] = world_data
+            
+            database.save_status_data(json_data)
+            
+            # Check each configured world for updates
+            worlds_to_scrape = []
+            for config_item in scraping_config:
+                world = config_item['world']
+                
+                # Check if world exists in status data
+                if world not in all_status:
+                    log_console(f"World '{world}' not found in status data, skipping", "WARNING")
+                    continue
+                
+                # Get update time for this specific world
+                df = all_status[world]
+                if 'rotina' not in df.columns or 'last update' not in df.columns:
+                    log_console(f"Invalid data structure for world '{world}', skipping", "WARNING")
+                    continue
+                
+                daily_raw = df[df['rotina'] == 'Daily Raw Ranking']
+                if daily_raw.empty:
+                    log_console(f"No 'Daily Raw Ranking' data for world '{world}', skipping", "WARNING")
+                    continue
+                
+                current_update = pd.to_datetime(daily_raw['last update'].values[0])
+                
+                # Check if this world has a new update
+                if world not in last_updates or last_updates[world] != current_update:
+                    if current_update not in ignore_updates:
+                        worlds_to_scrape.append({
+                            'config': config_item,
+                            'update_time': current_update
+                        })
+                        log_console(f"New update for {world}: {last_updates.get(world, 'na')} -> {current_update}", "INFO")
+            
+            if not worlds_to_scrape:
                 if debug:
-                    log_console("No new update found, sleeping 10s", "DEBUG")
+                    log_console("No new updates found for any world, sleeping 60s", "DEBUG")
                 with scraper_lock:
                     scraper_state = "sleeping"
                 time.sleep(60)
             else:
-                log_console(f"New update detected: {last_update} -> {current_update}")
-                
-                # Check for daily reset before processing this update
-                database.check_and_reset_daily(current_update)
-                
+                # Process EACH WORLD separately with its own timestamp
                 with scraper_lock:
                     scraper_state = "scraping"
-                r=get_ranking()
-                if r is None or len(r) < 2:
-                    pass
-                else:
-                    rankings = r[1]
-                    rankparsed = parse_to_db_formatted(rankings, current_update)
-                    database.update(rankparsed, current_update)
-                    database.save()
                 
-                last_update = current_update
-                log_console(f"Rankings updated successfully at {current_update}", "SUCCESS")
+                worlds_updated = 0
+                for item in worlds_to_scrape:
+                    config_item = item['config']
+                    update_time = item['update_time']
+                    world = config_item['world']
+                    guilds = config_item['guilds']
+                    
+                    log_console(f"Processing world: {world} at {update_time}", "INFO")
+                    
+                    # Check for daily reset before processing this world
+                    database.check_and_reset_daily(update_time)
+                    
+                    # Collect all players from all guilds in THIS world
+                    world_players = []
+                    for guild in guilds:
+                        try:
+                            log_console(f"Scraping {world} - {guild}", "INFO")
+                            r = get_ranking(world=world, guildname=guild)
+                            
+                            if r is None or len(r) < 2:
+                                log_console(f"No data for {world} - {guild}", "WARNING")
+                            else:
+                                rankings = r[1]
+                                rankparsed = parse_to_db_formatted(rankings, update_time, world=world, guild=guild)
+                                world_players.append(rankparsed)
+                                log_console(f"Got {len(rankparsed)} players from {world} - {guild}", "SUCCESS")
+                        except Exception as e:
+                            log_console(f"Error scraping {world} - {guild}: {str(e)}", "ERROR")
+                    
+                    # Update database for THIS WORLD ONLY with ITS timestamp
+                    if world_players:
+                        combined_df = pd.concat(world_players, ignore_index=True)
+                        # Remove duplicates (same player in multiple guilds - keep first)
+                        combined_df = combined_df.drop_duplicates(subset=['name'], keep='first')
+                        
+                        # Update database with THIS world's specific timestamp
+                        database.update(combined_df, update_time)
+                        database.save()
+                        log_console(f"Updated {len(combined_df)} players for {world} at {update_time}", "SUCCESS")
+                        
+                        # Mark this world as updated and add to ignore list
+                        last_updates[world] = update_time
+                        if update_time not in ignore_updates:
+                            ignore_updates.append(update_time)
+                        
+                        worlds_updated += 1
+                    else:
+                        log_console(f"No player data collected for {world}", "WARNING")
+                
+                if worlds_updated > 0:
+                    log_console(f"Successfully updated {worlds_updated} world(s)", "SUCCESS")
+                else:
+                    log_console("No worlds were updated", "WARNING")
                 
                 with scraper_lock:
                     scraper_state = "idle"
         except Exception as e:
             log_console(f"Error in scraper: {str(e)}", "ERROR")
+            traceback.print_exc()
             with scraper_lock:
                 scraper_state = "sleeping"
             time.sleep(10)  # Wait before retry
@@ -583,6 +959,98 @@ def get_delta_between(datetime1, datetime2, database):
     return table[mask]
 
 
+def preprocess_vis_data(all_update_times, all_player_data, names_list):
+    """
+    Preprocess visualization data to compress consecutive zero periods.
+    Returns compressed times and player data with zeros grouped.
+    """
+    num_times = len(all_update_times)
+    
+    # Identify positions where ALL players have zero
+    all_zero_positions = []
+    for i in range(num_times):
+        if all(all_player_data[name][i] == 0 for name in names_list):
+            all_zero_positions.append(i)
+    
+    # Group consecutive zero positions (only if there are 2+ consecutive zeros)
+    zero_groups = []
+    if all_zero_positions:
+        start = all_zero_positions[0]
+        for i in range(1, len(all_zero_positions)):
+            if all_zero_positions[i] != all_zero_positions[i-1] + 1:
+                # End of a consecutive group
+                if all_zero_positions[i-1] - start >= 1:  # At least 2 consecutive zeros
+                    zero_groups.append((start, all_zero_positions[i-1]))
+                start = all_zero_positions[i]
+        # Don't forget the last group
+        if all_zero_positions[-1] - start >= 1:
+            zero_groups.append((start, all_zero_positions[-1]))
+    
+    # Build compressed timeline - convert everything to strings with smart date display
+    compressed_times = []
+    compressed_data = {name: [] for name in names_list}
+    
+    prev_date = None
+    i = 0
+    while i < num_times:
+        # Check if this position starts a zero group
+        in_zero_group = False
+        for start, end in zero_groups:
+            if i == start:
+                # Create label for zero period
+                start_time = pd.to_datetime(all_update_times[start])
+                end_time = pd.to_datetime(all_update_times[end])
+                
+                # Format with smart date display
+                start_date = start_time.date()
+                end_date = end_time.date()
+                
+                if start_date == end_date:
+                    # Same day - show date once
+                    if start_date != prev_date:
+                        label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%H:%M')}"
+                    else:
+                        label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%H:%M')}"
+                else:
+                    # Different days - show both dates
+                    if start_date != prev_date:
+                        label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
+                    else:
+                        label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
+                
+                compressed_times.append(label)
+                prev_date = end_date
+                
+                # Add single zero for each player for this period
+                for name in names_list:
+                    compressed_data[name].append(0)
+                
+                i = end + 1
+                in_zero_group = True
+                break
+        
+        if not in_zero_group:
+            # Regular data point - convert to string with smart date display
+            time_obj = pd.to_datetime(all_update_times[i])
+            current_date = time_obj.date()
+            
+            if current_date != prev_date:
+                # Date changed - show full date
+                time_str = time_obj.strftime('%d/%m/%Y %H:%M')
+            else:
+                # Same day - show only time
+                time_str = time_obj.strftime('%H:%M')
+            
+            compressed_times.append(time_str)
+            prev_date = current_date
+            
+            for name in names_list:
+                compressed_data[name].append(all_player_data[name][i])
+            i += 1
+    
+    return compressed_times, compressed_data
+
+
 def create_interactive_graph(names, database, datetime1=None, datetime2=None):
     """Create interactive Plotly graph for player EXP gains"""
     table = database.get_deltas()
@@ -596,35 +1064,37 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
     # Get all unique update times across all data (standardized timeline)
     all_update_times = sorted(table['update time'].unique())
 
+    # Build data for all players first
+    all_player_data = {}
+    for name in names_list:
+        player_data = table[table['name'] == name]
+        if not player_data.empty:
+            player_deltas = dict(zip(player_data['update time'], player_data['deltaexp']))
+            standardized_exps = [player_deltas.get(update_time, 0) for update_time in all_update_times]
+            all_player_data[name] = standardized_exps
+
+    if not all_player_data:
+        fig = go.Figure()
+        fig.update_layout(title='No data available')
+        return fig.to_json()
+
+    # Preprocess data to compress zero periods
+    compressed_times, compressed_data = preprocess_vis_data(all_update_times, all_player_data, names_list)
+
     # Create plotly figure
     fig = go.Figure()
 
+    # Build traces with compressed data
     for name in names_list:
-        # Get player's deltas
-        player_data = table[table['name'] == name]
-
-        if not player_data.empty:
-            # Create a dictionary of time -> deltaexp for this player
-            player_deltas = dict(zip(player_data['update time'], player_data['deltaexp']))
-
-            # Fill in missing times with 0
-            standardized_times = []
-            standardized_exps = []
-
-            for update_time in all_update_times:
-                standardized_times.append(update_time)
-                standardized_exps.append(player_deltas.get(update_time, 0))
-
-            fig.add_trace(go.Scatter(
-                x=standardized_times,
-                y=standardized_exps,
-                mode='lines+markers+text',
-                name=name,
-                text=[str(exp) if exp > 0 else '' for exp in standardized_exps],
-                textposition='top center',
-                marker=dict(size=10),
-                line=dict(width=2)
-            ))
+        fig.add_trace(go.Bar(
+            x=compressed_times,
+            y=compressed_data[name],
+            name=name,
+            text=[str(int(exp)) if exp > 0 else '' for exp in compressed_data[name]],
+            textposition='outside',
+            textangle=0,
+            hovertemplate='<b>%{x}</b><br>EXP: %{y:,.0f}<extra></extra>'
+        ))
 
     fig.update_layout(
         title=f'EXP Gain Over Time',
@@ -633,7 +1103,16 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
         hovermode='x unified',
         template='plotly_white',
         height=600,
-        showlegend=True
+        showlegend=True,
+        barmode='group',  # Group bars side by side for multiple players
+        bargap=0,  # No gap between bars
+        bargroupgap=0,  # No gap between bar groups
+        xaxis=dict(
+            type='category',  # Treat x-axis as categorical (string bins)
+            tickangle=-45,
+            tickmode='auto',
+            nticks=20
+        )
     )
 
     return fig.to_json()
@@ -673,6 +1152,15 @@ def index():
 def get_players():
     """Get list of all players"""
     deltas = db.get_deltas()
+    world = request.args.get('world')
+    guild = request.args.get('guild')
+    
+    # Filter by world and guild if specified
+    if world:
+        deltas = deltas[deltas['world'] == world]
+    if guild:
+        deltas = deltas[deltas['guild'] == guild]
+    
     players = sorted(deltas['name'].unique().tolist())
     return jsonify(players)
 
@@ -681,6 +1169,15 @@ def get_players():
 def get_date_range():
     """Get available date range"""
     deltas = db.get_deltas()
+    world = request.args.get('world')
+    guild = request.args.get('guild')
+    
+    # Filter by world and guild if specified
+    if world:
+        deltas = deltas[deltas['world'] == world]
+    if guild:
+        deltas = deltas[deltas['guild'] == guild]
+    
     if not deltas.empty:
         min_date = deltas['update time'].min()
         max_date = deltas['update time'].max()
@@ -867,7 +1364,7 @@ def console_stream():
 def get_scraper_status():
     """Get scraper status"""
     global last_status_check
-    last_status_check = datetime.now() - timedelta(hours=3)
+    last_status_check = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
     
     deltas = db.get_deltas()
     with scraper_lock:
@@ -1001,13 +1498,35 @@ def get_player_graph(player_name):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/player-details/<player_name>', methods=['GET'])
+def get_player_details(player_name):
+    """Get detailed player data from rubinothings.com.br"""
+    try:
+        player_data = scrape_player_data(player_name)
+        return jsonify(player_data)
+    except Exception as e:
+        log_console(f"Error getting player details for {player_name}: {str(e)}", "ERROR")
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
 @app.route('/api/delta', methods=['GET'])
 def get_deltas():
     """Get recent delta updates for polling"""
     try:
         limit = request.args.get('limit', 100, type=int)
+        world = request.args.get('world')
+        guild = request.args.get('guild')
         
         all_deltas = db.get_deltas()
+        
+        if all_deltas.empty:
+            return jsonify({'deltas': []})
+        
+        # Filter by world and guild if specified
+        if world:
+            all_deltas = all_deltas[all_deltas['world'] == world]
+        if guild:
+            all_deltas = all_deltas[all_deltas['guild'] == guild]
         
         if all_deltas.empty:
             return jsonify({'deltas': []})
@@ -1036,12 +1555,75 @@ def get_deltas():
                 'name': row['name'],
                 'deltaexp': int(row['deltaexp']),
                 'update_time': current_time.isoformat(),
-                'prev_update_time': prev_update_time.isoformat()
+                'prev_update_time': prev_update_time.isoformat(),
+                'world': row.get('world', DEFAULT_WORLD),
+                'guild': row.get('guild', DEFAULT_GUILD)
             })
         
         return jsonify({'deltas': deltas})
     except Exception as e:
         log_console(f"Error getting deltas: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/status-data')
+def get_status_data():
+    """Get the stored status data from all worlds"""
+    try:
+        status_data = db.get_status_data()
+        if status_data:
+            return jsonify(status_data)
+        else:
+            return jsonify({
+                'error': 'No status data available yet',
+                'message': 'Status data will be available after the first update'
+            }), 404
+    except Exception as e:
+        log_console(f"Error getting status data: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraping-config', methods=['GET'])
+def get_scraping_config():
+    """Get the scraping configuration"""
+    try:
+        config = db.get_scraping_config()
+        return jsonify(config)
+    except Exception as e:
+        log_console(f"Error getting scraping config: {str(e)}", "ERROR")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraping-config', methods=['POST'])
+def update_scraping_config():
+    """Update the scraping configuration"""
+    try:
+        # Check password
+        password = request.json.get('password')
+        if password != UPLOAD_PASSWORD:
+            return jsonify({'error': 'Invalid password'}), 401
+        
+        config = request.json.get('config')
+        if not config:
+            return jsonify({'error': 'No config provided'}), 400
+        
+        # Validate config structure
+        if not isinstance(config, list):
+            return jsonify({'error': 'Config must be an array'}), 400
+        
+        for item in config:
+            if 'world' not in item or 'guilds' not in item:
+                return jsonify({'error': 'Each config item must have "world" and "guilds" fields'}), 400
+            if not isinstance(item['guilds'], list):
+                return jsonify({'error': '"guilds" must be an array'}), 400
+        
+        # Save the configuration
+        db.save_scraping_config(config)
+        log_console(f"Scraping configuration updated via API", "SUCCESS")
+        
+        return jsonify({'success': True, 'config': config})
+    except Exception as e:
+        log_console(f"Error updating scraping config: {str(e)}", "ERROR")
         return jsonify({'error': str(e)}), 500
 
 
@@ -1067,15 +1649,47 @@ def manual_update():
         with scraper_lock:
             scraper_state = "checking"
         
-        current_update = return_last_update()
+        # Get scraping configuration
+        scraping_config = db.get_scraping_config()
+        first_world = scraping_config[0]['world'] if scraping_config else DEFAULT_WORLD
+        
+        current_update = return_last_update(first_world, save_all_data=True, database=db)
+        
+        if current_update is None:
+            raise Exception("Failed to get update time")
         
         with scraper_lock:
             scraper_state = "scraping"
         
-        rankings = get_ranking()[1]
-        rankparsed = parse_to_db_formatted(rankings, current_update)
-        db.update(rankparsed, current_update)
-        db.save()
+        # Scrape all worlds and guilds
+        all_players = []
+        for config_item in scraping_config:
+            world = config_item['world']
+            guilds = config_item['guilds']
+            
+            for guild in guilds:
+                try:
+                    log_console(f"Manual scraping {world} - {guild}", "INFO")
+                    r = get_ranking(world=world, guildname=guild)
+                    
+                    if r is None or len(r) < 2:
+                        log_console(f"No data for {world} - {guild}", "WARNING")
+                    else:
+                        rankings = r[1]
+                        rankparsed = parse_to_db_formatted(rankings, current_update, world=world, guild=guild)
+                        all_players.append(rankparsed)
+                except Exception as e:
+                    log_console(f"Error scraping {world} - {guild}: {str(e)}", "ERROR")
+        
+        # Combine all players and update database
+        if all_players:
+            combined_df = pd.concat(all_players, ignore_index=True)
+            combined_df = combined_df.drop_duplicates(subset=['name'], keep='first')
+            db.update(combined_df, current_update)
+            db.save()
+            log_console(f"Manual update: {len(combined_df)} total players", "SUCCESS")
+        else:
+            raise Exception("No player data collected from any world/guild")
         
         with scraper_lock:
             scraper_state = "idle"

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RINGTS - Player Analytics Dashboard</title>
+    <title>RINGTS - XISNOVE Analytics Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
@@ -24,17 +24,44 @@
 
         <div class="main-content">
         <header>
-            <h1>🎮 RINGTS Analytics Dashboard</h1>
-            <p>Track player experience gains and performance over time</p>
+            <h1>🎮 ISNOVE Analytics Dashboard</h1>
+            <p>Te peguei caçando no massivo</p>
+            
+            <!-- Global Filters -->
+            <div class="global-filters">
+                <div class="filter-group">
+                    <label for="worldFilter">🌍 World:</label>
+                    <select id="worldFilter" class="filter-select">
+                        <option value="Auroria">Auroria</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="guildFilter">⚔️ Guild:</label>
+                    <select id="guildFilter" class="filter-select">
+                        <option value="Ascended Auroria">Ascended Auroria</option>
+                    </select>
+                </div>
+                <button id="applyFilters" class="btn-filter">Apply Filters</button>
+            </div>
+            
             <div class="header-controls">
                 <div class="scraper-status" id="scraperStatus">
                     <span class="status-indicator"></span>
                     <span class="status-text">Connecting...</span>
                 </div>
                 <div class="status-times" id="statusTimes">
-                    <div class="status-time-item">
+                    <div class="status-time-item world-status-dropdown">
                         <span class="time-label">Last Update:</span>
                         <span class="time-value" id="lastUpdateTime">--</span>
+                        <div class="world-status-popup" id="worldStatusPopup">
+                            <div class="world-status-header">
+                                <h4>🌍 World Status</h4>
+                                <span class="fetch-time" id="fetchTime">--</span>
+                            </div>
+                            <div class="world-status-content" id="worldStatusContent">
+                                <p>Loading...</p>
+                            </div>
+                        </div>
                     </div>
                     <div class="status-time-item">
                         <span class="time-label">Last Check:</span>
@@ -109,6 +136,32 @@
                     <h2>📈 Detailed Statistics</h2>
                     <div id="statsTable" class="stats-placeholder">
                         <p>Statistical breakdown will appear here</p>
+                    </div>
+                </div>
+
+                <div class="player-details-dashboard" id="playerDetailsDashboard" style="display: none;">
+                    <h2 id="dashboardPlayerName">📋 Player Details</h2>
+                    
+                    <!-- Dashboard Tabs -->
+                    <div class="dashboard-main-tabs">
+                        <button class="dashboard-main-tab-btn active" onclick="switchDashboardMainTab('multi-graph')">📈 Multi-Graph</button>
+                        <button class="dashboard-main-tab-btn" onclick="switchDashboardMainTab('tables')">📊 Tables</button>
+                    </div>
+                    
+                    <!-- Multi-Graph Tab -->
+                    <div class="dashboard-tab-content active" id="dashboard-multi-graph">
+                        <div id="dashboardMultiGraphDiv" class="combined-overview-chart" style="margin-top: 20px;"></div>
+                    </div>
+                    
+                    <!-- Tables Tab -->
+                    <div class="dashboard-tab-content" id="dashboard-tables">
+                        <div class="loading-overlay" id="dashboardDetailsLoading">
+                            <div class="loading-spinner"></div>
+                            <p>Loading player details...</p>
+                        </div>
+                        <div id="dashboardDetailsContent" class="dashboard-details-content">
+                            <!-- Player details will be inserted here -->
+                        </div>
                     </div>
                 </div>
             </div>
@@ -236,13 +289,41 @@
 
         <!-- Player Graph Modal -->
         <div class="modal" id="playerModal">
-            <div class="modal-content">
+            <div class="modal-content modal-large">
                 <div class="modal-header">
                     <h2 id="modalPlayerName">Player EXP Graph</h2>
                     <button class="modal-close" onclick="closePlayerModal()">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div id="modalGraphDiv" style="width: 100%; height: 500px;"></div>
+                    <!-- Main Tabs -->
+                    <div class="modal-main-tabs">
+                        <button class="modal-main-tab-btn active" onclick="switchModalMainTab('raw-graph')">📊 Raw Graph</button>
+                        <button class="modal-main-tab-btn" onclick="switchModalMainTab('multi-graph')">📈 Multi-Graph</button>
+                        <button class="modal-main-tab-btn" onclick="switchModalMainTab('tables')">📋 Tables</button>
+                    </div>
+                    
+                    <!-- Tab Contents -->
+                    <div class="modal-tab-content active" id="modal-raw-graph">
+                        <div id="modalGraphDiv" style="width: 100%; height: 500px;"></div>
+                    </div>
+                    
+                    <div class="modal-tab-content" id="modal-multi-graph">
+                        <div class="loading-overlay" id="multiGraphLoading" style="display: none;">
+                            <div class="loading-spinner"></div>
+                            <p>Loading multi-graph...</p>
+                        </div>
+                        <div id="modalMultiGraphDiv" class="combined-overview-chart"></div>
+                    </div>
+                    
+                    <div class="modal-tab-content" id="modal-tables">
+                        <div class="loading-overlay" id="playerDetailsLoading">
+                            <div class="loading-spinner"></div>
+                            <p>Loading player details...</p>
+                        </div>
+                        <div id="playerDetailsContent" class="player-details-content" style="display: none;">
+                            <!-- Player details will be inserted here -->
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
