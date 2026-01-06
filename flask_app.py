@@ -999,7 +999,11 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
         for start, end in zero_groups:
             if i == start:
                 # Create label for zero period
-                start_time = pd.to_datetime(all_update_times[start])
+                # Use timestamp BEFORE the zero group starts (if it exists)
+                if start > 0:
+                    start_time = pd.to_datetime(all_update_times[start - 1])
+                else:
+                    start_time = pd.to_datetime(all_update_times[start])
                 end_time = pd.to_datetime(all_update_times[end])
                 
                 # Format with smart date display
