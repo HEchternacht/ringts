@@ -747,6 +747,31 @@ class Database:
             df.to_csv(self.deltavip_file, index=False)
             log_console(f"VIP delta: {name} ({world}) +{delta_exp} exp, +{delta_online} online", "INFO")
     
+    def update_last_vip_delta_time(self, name, world, new_update_time):
+        """Update the update_time of the last delta entry for a VIP"""
+        with self.lock:
+            try:
+                df = pd.read_csv(self.deltavip_file,
+                                dtype={'name': str, 'world': str, 'date': str, 'delta_exp': 'int64', 'delta_online': 'int64'},
+                                parse_dates=['update_time'])
+            except (FileNotFoundError, pd.errors.EmptyDataError):
+                return False
+            
+            # Filter for this VIP's entries
+            vip_mask = (df['name'] == name) & (df['world'] == world)
+            if not vip_mask.any():
+                return False
+            
+            # Get the last entry index
+            vip_entries = df[vip_mask]
+            last_idx = vip_entries.index[-1]
+            
+            # Update the timestamp
+            df.at[last_idx, 'update_time'] = new_update_time
+            df.to_csv(self.deltavip_file, index=False)
+            log_console(f"Updated VIP delta timestamp: {name} ({world}) to {new_update_time}", "INFO")
+            return True
+    
     def _reset_vip_daily(self):
         """Reset VIP data at daily reset"""
         with self.lock:
@@ -1134,19 +1159,37 @@ def scrape_single_vip(database, name, world):
                 delta_exp = today_exp - old_exp
                 delta_online = today_online - old_online
                 
+                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                today_date = now.strftime("%Y-%m-%d")
+                
                 # Only process if exp has changed
                 if delta_exp != 0:
                     # Save delta (including online time change)
-                    now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
-                    today_date = now.strftime("%Y-%m-%d")
                     database.add_vip_delta(name, world, today_date, delta_exp, delta_online, now)
                     
                     # Update VIP data with NEW values
                     database.update_vipdata(name, world, today_exp, today_online)
                     log_console(f"VIP {name} ({world}): {today_exp} exp, {today_online} min online", "INFO")
                 else:
-                    # Exp hasn't changed, skip update
-                    log_console(f"VIP {name} ({world}): No exp change, skipping update", "INFO")
+                    # Exp hasn't changed - check last delta
+                    deltavip = database.get_deltavip()
+                    vip_deltas = deltavip[(deltavip['name'] == name) & (deltavip['world'] == world)]
+                    
+                    if not vip_deltas.empty:
+                        last_delta_exp = vip_deltas.iloc[-1]['delta_exp']
+                        
+                        if last_delta_exp == 0:
+                            # Last delta was also zero - just update timestamp
+                            database.update_last_vip_delta_time(name, world, now)
+                            log_console(f"VIP {name} ({world}): No exp change, updated last zero timestamp", "INFO")
+                        else:
+                            # Last delta was non-zero - save new zero delta
+                            database.add_vip_delta(name, world, today_date, 0, delta_online, now)
+                            log_console(f"VIP {name} ({world}): Saved zero delta (last was non-zero)", "INFO")
+                    else:
+                        # No previous deltas - save zero
+                        database.add_vip_delta(name, world, today_date, 0, delta_online, now)
+                        log_console(f"VIP {name} ({world}): First delta (zero)", "INFO")
             else:
                 # First time tracking - create initial baseline with 0 delta
                 now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
@@ -2364,11 +2407,19 @@ def get_vip_deltas():
         if deltavip.empty:
             return jsonify({'deltas': []})
         
+        # Keep original data before filtering for time header calculation
+        original_deltavip = deltavip.copy()
+        
         # Filter by name and world if provided
         if name:
             deltavip = deltavip[deltavip['name'] == name]
+            original_deltavip = original_deltavip[original_deltavip['name'] == name]
         if world:
             deltavip = deltavip[deltavip['world'] == world]
+            original_deltavip = original_deltavip[original_deltavip['world'] == world]
+        
+        # Filter out zero exp entries for display
+        deltavip = deltavip[deltavip['delta_exp'] != 0]
         
         if deltavip.empty:
             return jsonify({'deltas': []})
@@ -2376,27 +2427,35 @@ def get_vip_deltas():
         # Sort by update time descending and limit
         recent_deltas = deltavip.sort_values('update_time', ascending=False).head(limit)
         
-        # Get distinct update times for efficient lookup (no need for list conversion)
-        distinct_times_list = sorted(deltavip['update_time'].unique())
-        
-        # Create a mapping of update_time -> prev_update_time
-        prev_time_map = {}
-        for i, current_time in enumerate(distinct_times_list):
-            if i > 0:
-                prev_time_map[current_time] = distinct_times_list[i - 1]
-            else:
-                prev_time_map[current_time] = current_time
-        
-        # Build delta list with calculated previous update times using itertuples
+        # Build delta list with time headers from last zero
         deltas = []
         for row in recent_deltas.itertuples(index=False):
-            # Access columns by position since some have underscores
             current_time = row[5]  # update_time is 6th column
-            prev_update_time = prev_time_map.get(current_time, current_time)
+            current_name = row.name
+            current_world = row.world
+            
+            # Find the last zero delta before this entry
+            vip_history = original_deltavip[
+                (original_deltavip['name'] == current_name) & 
+                (original_deltavip['world'] == current_world) &
+                (original_deltavip['update_time'] < current_time)
+            ].sort_values('update_time', ascending=False)
+            
+            # Get the most recent zero or the previous entry
+            if not vip_history.empty:
+                last_entry = vip_history.iloc[0]
+                if last_entry['delta_exp'] == 0:
+                    prev_update_time = last_entry['update_time']
+                else:
+                    # No recent zero, use the previous non-zero entry's time
+                    prev_update_time = last_entry['update_time']
+            else:
+                # First entry, use current time
+                prev_update_time = current_time
             
             deltas.append({
-                'name': row.name,
-                'world': row.world,
+                'name': current_name,
+                'world': current_world,
                 'delta_exp': int(row.delta_exp),
                 'delta_online': int(row.delta_online),
                 'update_time': current_time.isoformat(),
@@ -2405,7 +2464,7 @@ def get_vip_deltas():
             })
         
         response = jsonify({'deltas': deltas})
-        del deltavip, recent_deltas, distinct_times_list, prev_time_map, deltas
+        del deltavip, original_deltavip, recent_deltas, deltas
         gc.collect()
         return response
     except Exception as e:
