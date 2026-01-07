@@ -1350,7 +1350,9 @@ def loop_get_rankings(database, debug=False):
                                 log_console(f"Got {len(rankparsed)} players from {world} - {guild}", "SUCCESS")
                         except Exception as e:
                             log_console(f"Error scraping {world} - {guild}: {str(e)}", "ERROR")
-                    
+
+                    log_console("Scraping VIP data...", "INFO")
+                    scrape_vip_data(database, world)
                     # Update database for THIS WORLD ONLY with ITS timestamp
                     if world_players:
                         combined_df = pd.concat(world_players, ignore_index=True)
@@ -1367,7 +1369,7 @@ def loop_get_rankings(database, debug=False):
                         gc.collect()
                         
                         # Scrape VIP data for THIS specific world
-                        scrape_vip_data(database, world)
+                        
                         
                         # Mark this world as updated and add to ignore list
                         last_updates[world] = update_time
