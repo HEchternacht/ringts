@@ -35,7 +35,7 @@ UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
 #DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
@@ -1389,6 +1389,15 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
     """
     num_times = len(all_update_times)
     
+    # Sort by datetime - create sorted indices to maintain data correspondence
+    sorted_indices = sorted(range(num_times), key=lambda i: pd.to_datetime(all_update_times[i]))
+    
+    # Reorder all_update_times and all_player_data according to sorted indices
+    all_update_times = [all_update_times[i] for i in sorted_indices]
+    all_player_data = {name: [all_player_data[name][i] for i in sorted_indices] for name in names_list}
+    
+
+    log_console(all_player_data, "DEBUG")
     # Identify positions where ALL players have zero
     all_zero_positions = []
     for i in range(num_times):
@@ -1409,11 +1418,11 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
         if all_zero_positions[-1] - start >= 1:
             zero_groups.append((start, all_zero_positions[-1]))
     
-    # Build compressed timeline - convert everything to strings with smart date display
+    # Build compressed timeline - generate labels with metadata for duplicate detection
     compressed_times = []
     compressed_data = {name: [] for name in names_list}
+    label_metadata = []  # Store (label, full_label, index) for duplicate detection
     
-    prev_date = None
     prev_time = None
     i = 0
     while i < num_times:
@@ -1429,25 +1438,20 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
                     start_time = pd.to_datetime(all_update_times[start])
                 end_time = pd.to_datetime(all_update_times[end])
                 
-                # Format with smart date display
                 start_date = start_time.date()
                 end_date = end_time.date()
                 
                 if start_date == end_date:
-                    # Same day - show date once
-                    if start_date != prev_date:
-                        label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%H:%M')}"
-                    else:
-                        label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%H:%M')}"
+                    # Same day - short label without date
+                    short_label = f"{start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}"
+                    full_label = f"{start_time.strftime('%d/%m/%Y %H:%M')}-{end_time.strftime('%H:%M')}"
                 else:
-                    # Different days - show both dates
-                    if start_date != prev_date:
-                        label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
-                    else:
-                        label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
+                    # Different days - always show both full dates
+                    short_label = f"{start_time.strftime('%d/%m/%Y %H:%M')}-{end_time.strftime('%d/%m/%Y %H:%M')}"
+                    full_label = short_label
                 
-                compressed_times.append(label)
-                prev_date = end_date
+                label_metadata.append((short_label, full_label, len(compressed_times)))
+                compressed_times.append(short_label)
                 prev_time = end_time
                 
                 # Add single zero for each player for this period
@@ -1459,43 +1463,44 @@ def preprocess_vis_data(all_update_times, all_player_data, names_list):
                 break
         
         if not in_zero_group:
-            # Regular data point - show as range from previous timestamp to current
+            # Regular data point
             time_obj = pd.to_datetime(all_update_times[i])
             current_date = time_obj.date()
             
             # Determine start time for this bucket (previous timestamp or first point)
             if prev_time is None:
                 # First data point - show as single time point
-                if current_date != prev_date:
-                    time_str = time_obj.strftime('%d/%m/%Y %H:%M')
-                else:
-                    time_str = time_obj.strftime('%H:%M')
+                short_label = time_obj.strftime('%H:%M')
+                full_label = time_obj.strftime('%d/%m/%Y %H:%M')
             else:
                 # Show range from previous timestamp to current
                 start_date = prev_time.date()
                 
                 if start_date == current_date:
-                    # Same day - show time range
-                    if current_date != prev_date:
-                        time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%H:%M')}"
-                    else:
-                        time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%H:%M')}"
+                    # Same day - short label without date
+                    short_label = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%H:%M')}"
+                    full_label = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%H:%M')}"
                 else:
-                    # Different days - show full range
-                    if start_date != prev_date:
-                        time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
-                    else:
-                        time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                    # Different days - always show both full dates
+                    short_label = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                    full_label = short_label
             
-            compressed_times.append(time_str)
-            prev_date = current_date
+            label_metadata.append((short_label, full_label, len(compressed_times)))
+            compressed_times.append(short_label)
             prev_time = time_obj
             
             for name in names_list:
                 compressed_data[name].append(all_player_data[name][i])
             i += 1
     
-    del all_zero_positions, zero_groups
+    # Check for duplicates and replace with full labels where needed
+    from collections import Counter
+    label_counts = Counter(compressed_times)
+    for short_label, full_label, idx in label_metadata:
+        if label_counts[short_label] > 1:
+            compressed_times[idx] = full_label
+
+    del all_zero_positions, zero_groups, label_metadata, label_counts
     gc.collect()
     return compressed_times, compressed_data
 
@@ -1542,35 +1547,52 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
     # Preprocess data to compress zero periods
     compressed_times, compressed_data = preprocess_vis_data(all_update_times, all_player_data, names_list)
 
+    print(compressed_times)
+    print(compressed_data)
     # Create plotly figure
     fig = go.Figure()
 
     # Build traces with compressed data
     for idx, name in enumerate(names_list):
-        color = theme_colors[idx % len(theme_colors)]
-        # Add bar trace
+        base_color = theme_colors[idx % len(theme_colors)]
+        
+        # Convert hex to RGB for opacity support
+        hex_color = base_color.lstrip('#')
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        
+        # Add bar trace with gradient colors
         fig.add_trace(go.Bar(
             x=compressed_times,
             y=compressed_data[name],
             name=name,
-            marker_color=color,
+            marker=dict(
+                color=compressed_data[name],  # Use values for gradient
+                colorscale=[
+                    [0, f'rgba({r},{g},{b},0.2)'],  # Light (20% opacity)
+                    [0.5, f'rgba({r},{g},{b},0.6)'],  # Medium (60% opacity)
+                    [1, f'rgba({r},{g},{b},1)']  # Full color
+                ],
+                showscale=False,
+                line=dict(width=0)
+            ),
             text=[str(int(exp)) if exp > 0 else '' for exp in compressed_data[name]],
             textposition='outside',
             textangle=0,
             hovertemplate='<b>%{x}</b><br>EXP: %{y:,.0f}<extra></extra>'
         ))
         
-        # Add smooth line connecting the tops of the bars
+        # Add smooth spline line on top in light blue
         fig.add_trace(go.Scatter(
             x=compressed_times,
             y=compressed_data[name],
             name=f'{name} (trend)',
             mode='lines',
-            line=dict(color=color, width=2, shape='spline'),
+            line=dict(color='#3498db', width=3, shape='spline'),
             showlegend=False,
             hoverinfo='skip'
         ))
-
+        
+      
     fig.update_layout(
         title=f'EXP Gain Over Time',
         xaxis_title='Update Time',
@@ -1584,11 +1606,17 @@ def create_interactive_graph(names, database, datetime1=None, datetime2=None):
         bargroupgap=0,  # No gap between bar groups
         xaxis=dict(
             type='category',  # Treat x-axis as categorical (string bins)
+            categoryorder='array',  # Use explicit array ordering
+            categoryarray=compressed_times,  # Exact order from data
             tickangle=-45,
             tickmode='auto',
             nticks=20
         ),
         colorway=theme_colors  # Set default color palette
+    )
+    fig.update_xaxes(
+    categoryorder='array',
+    categoryarray=compressed_times
     )
 
     result = fig.to_json()
@@ -2428,14 +2456,14 @@ def get_vip_graph():
             if all_zero_positions[-1] - start >= 1:
                 zero_groups.append((start, all_zero_positions[-1]))
         
-        # Build compressed data
+        # Build compressed data with duplicate detection
         time_labels = []
         compressed_exp = []
         compressed_online = []
         compressed_online_display = []  # For display with time diff labels
         time_diffs = []  # Store time differences in minutes
+        label_metadata = []  # Store (label, full_label, index) for duplicate detection
         
-        prev_date = None
         prev_time = None
         prev_timestamp = None
         i = 0
@@ -2455,22 +2483,20 @@ def get_vip_graph():
                     end_date = end_time.date()
                     
                     if start_date == end_date:
-                        if start_date != prev_date:
-                            label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%H:%M')}"
-                        else:
-                            label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%H:%M')}"
+                        # Same day - short label without date
+                        short_label = f"{start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}"
+                        full_label = f"{start_time.strftime('%d/%m/%Y %H:%M')}-{end_time.strftime('%H:%M')}"
                     else:
-                        if start_date != prev_date:
-                            label = f"{start_time.strftime('%d/%m/%Y %H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
-                        else:
-                            label = f"{start_time.strftime('%H:%M')}->{end_time.strftime('%d/%m/%Y %H:%M')}"
+                        # Different days - always show both full dates
+                        short_label = f"{start_time.strftime('%d/%m/%Y %H:%M')}-{end_time.strftime('%d/%m/%Y %H:%M')}"
+                        full_label = short_label
                     
-                    time_labels.append(label)
+                    label_metadata.append((short_label, full_label, len(time_labels)))
+                    time_labels.append(short_label)
                     compressed_exp.append(0)
                     compressed_online.append(0)
                     compressed_online_display.append("0 / 0 min")
                     time_diffs.append(0)
-                    prev_date = end_date
                     prev_time = end_time
                     prev_timestamp = end_time
                     
@@ -2489,24 +2515,22 @@ def get_vip_graph():
                     time_diff_minutes = 0
                 
                 if prev_time is None:
-                    if current_date != prev_date:
-                        time_str = time_obj.strftime('%d/%m/%Y %H:%M')
-                    else:
-                        time_str = time_obj.strftime('%H:%M')
+                    # First data point - show as single time point
+                    short_label = time_obj.strftime('%H:%M')
+                    full_label = time_obj.strftime('%d/%m/%Y %H:%M')
                 else:
                     start_date = prev_time.date()
                     if start_date == current_date:
-                        if current_date != prev_date:
-                            time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%H:%M')}"
-                        else:
-                            time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%H:%M')}"
+                        # Same day - short label without date
+                        short_label = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%H:%M')}"
+                        full_label = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%H:%M')}"
                     else:
-                        if start_date != prev_date:
-                            time_str = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
-                        else:
-                            time_str = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                        # Different days - always show both full dates
+                        short_label = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                        full_label = short_label
                 
-                time_labels.append(time_str)
+                label_metadata.append((short_label, full_label, len(time_labels)))
+                time_labels.append(short_label)
                 compressed_exp.append(exp_values[i])
                 
                 # If online time is 0 but exp is not 0, use None for interpolation
@@ -2521,10 +2545,16 @@ def get_vip_graph():
                 compressed_online_display.append(display_label)
                 time_diffs.append(time_diff_minutes)
                 
-                prev_date = current_date
                 prev_time = time_obj
                 prev_timestamp = time_obj
                 i += 1
+        
+        # Check for duplicates and replace with full labels where needed
+        from collections import Counter
+        label_counts = Counter(time_labels)
+        for short_label, full_label, idx in label_metadata:
+            if label_counts[short_label] > 1:
+                time_labels[idx] = full_label
         
         # Create combined graph with dual y-axes
         fig = go.Figure()
