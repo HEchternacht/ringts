@@ -21,6 +21,7 @@ from pebble import ThreadPool
 from concurrent.futures import TimeoutError, as_completed
 import time
 import threading
+import psutil
 
 # Configure aggressive garbage collection for memory efficiency
 gc.set_threshold(700, 10, 5)  # More aggressive than default (700, 10, 10)
@@ -199,6 +200,7 @@ scraper_running = False
 scraper_state = "idle"  # idle, checking, scraping, sleeping
 scraper_lock = threading.Lock()
 last_status_check = None
+scraper_thread = None  # Reference to the scraper thread for health checks
 
 
 
@@ -1383,6 +1385,8 @@ def loop_get_rankings(database, debug=False):
 
 def start_scraper_thread(database):
     """Start the scraper in a background thread with auto-restart"""
+    global scraper_thread
+    
     def run_with_restart():
         while True:
             try:
@@ -1392,8 +1396,8 @@ def start_scraper_thread(database):
                 log_console(f"Scraper crashed: {str(e)}. Restarting in 1s...", "ERROR")
                 time.sleep(1)
 
-    thread = threading.Thread(target=run_with_restart, daemon=True)
-    thread.start()
+    scraper_thread = threading.Thread(target=run_with_restart, daemon=True)
+    scraper_thread.start()
     log_console("Scraper thread started with auto-restart enabled")
 
 # Initialize database
@@ -1923,6 +1927,120 @@ def get_scraper_status():
         'last_update': deltas['update time'].max().isoformat() if not deltas.empty else None,
         'last_check': last_status_check.isoformat()
     })
+
+
+@app.route('/healthz')
+def healthz():
+    """Health check endpoint for scraper - proper health assessment"""
+    try:
+        health_status = {
+            'status': 'healthy',
+            'checks': {}
+        }
+        
+        # Check 1: Scraper thread is alive
+        thread_alive = scraper_thread is not None and scraper_thread.is_alive()
+        health_status['checks']['scraper_thread_alive'] = thread_alive
+        
+        # Check 2: Database is accessible
+        try:
+            deltas = db.get_deltas()
+            exps = db.get_exps()
+            db_accessible = True
+            health_status['checks']['database_accessible'] = True
+            health_status['checks']['total_players'] = len(exps) if not exps.empty else 0
+            health_status['checks']['total_deltas'] = len(deltas) if not deltas.empty else 0
+        except Exception as e:
+            db_accessible = False
+            health_status['checks']['database_accessible'] = False
+            health_status['checks']['database_error'] = str(e)
+        
+        # Check 3: Recent updates (has there been an update in the last 2 hours?)
+        if db_accessible and not deltas.empty:
+            last_update = deltas['update time'].max()
+            time_since_update = datetime.now() - last_update
+            minutes_since_update = time_since_update.total_seconds() / 60
+            health_status['checks']['last_update'] = last_update.isoformat()
+            health_status['checks']['minutes_since_last_update'] = round(minutes_since_update, 2)
+            # Consider unhealthy if no updates in 2 hours (120 minutes)
+            recent_update = minutes_since_update < 120
+            health_status['checks']['recent_update'] = recent_update
+        else:
+            health_status['checks']['recent_update'] = False
+            health_status['checks']['last_update'] = None
+        
+        # Check 4: Scraper state
+        with scraper_lock:
+            current_state = scraper_state
+        health_status['checks']['scraper_state'] = current_state
+        health_status['checks']['scraper_running_flag'] = scraper_running
+        
+        # Overall health determination
+        if not thread_alive:
+            health_status['status'] = 'unhealthy'
+            health_status['reason'] = 'Scraper thread is not running'
+        elif not db_accessible:
+            health_status['status'] = 'unhealthy'
+            health_status['reason'] = 'Database is not accessible'
+        elif not health_status['checks'].get('recent_update', False):
+            health_status['status'] = 'degraded'
+            health_status['reason'] = 'No recent updates (>2 hours)'
+        
+        # Return appropriate HTTP status code
+        if health_status['status'] == 'healthy':
+            return jsonify(health_status), 200
+        elif health_status['status'] == 'degraded':
+            return jsonify(health_status), 200  # Still 200 but marked as degraded
+        else:
+            return jsonify(health_status), 503  # Service Unavailable
+            
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e),
+            'reason': 'Health check failed with exception'
+        }), 503
+
+
+@app.route('/memusage')
+def memusage():
+    """Memory usage endpoint - returns RAM usage statistics"""
+    try:
+        # Get current process
+        process = psutil.Process(os.getpid())
+        
+        # Get memory info
+        mem_info = process.memory_info()
+        
+        # Get system memory
+        system_mem = psutil.virtual_memory()
+        
+        return jsonify({
+            'process': {
+                'rss_bytes': mem_info.rss,  # Resident Set Size
+                'rss_mb': round(mem_info.rss / (1024 * 1024), 2),
+                'vms_bytes': mem_info.vms,  # Virtual Memory Size
+                'vms_mb': round(mem_info.vms / (1024 * 1024), 2),
+                'percent': round(process.memory_percent(), 2)
+            },
+            'system': {
+                'total_bytes': system_mem.total,
+                'total_mb': round(system_mem.total / (1024 * 1024), 2),
+                'total_gb': round(system_mem.total / (1024 * 1024 * 1024), 2),
+                'available_bytes': system_mem.available,
+                'available_mb': round(system_mem.available / (1024 * 1024), 2),
+                'available_gb': round(system_mem.available / (1024 * 1024 * 1024), 2),
+                'used_bytes': system_mem.used,
+                'used_mb': round(system_mem.used / (1024 * 1024), 2),
+                'used_gb': round(system_mem.used / (1024 * 1024 * 1024), 2),
+                'percent': system_mem.percent
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'message': 'Failed to retrieve memory usage'
+        }), 500
 
 
 @app.route('/api/download/deltas')

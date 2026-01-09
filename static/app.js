@@ -75,6 +75,16 @@ function setupEventListeners() {
     // Data management tab
     document.getElementById('uploadDeltas').addEventListener('change', handleDeltasUpload);
     document.getElementById('uploadExps').addEventListener('change', handleExpsUpload);
+    
+    // Health status click handler
+    document.getElementById('healthStatus').addEventListener('click', showHealthDetails);
+    
+    // Close health modal on outside click
+    document.getElementById('healthModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeHealthModal();
+        }
+    });
 }
 
 // Load filters configuration (worlds and guilds)
@@ -807,6 +817,10 @@ async function checkScraperStatus() {
         // Load world status data
         await loadWorldStatus();
         
+        // Update health and memory status
+        await updateHealthStatus();
+        await updateMemoryStatus();
+        
         if (data.running) {
             indicator.className = 'status-indicator running';
             
@@ -845,6 +859,124 @@ async function checkScraperStatus() {
     } catch (error) {
         console.error('Failed to check scraper status:', error);
     }
+}
+
+// Update health status
+async function updateHealthStatus() {
+    try {
+        const response = await fetch('/healthz');
+        const data = await response.json();
+        
+        const healthItem = document.getElementById('healthStatus');
+        const healthText = healthItem.querySelector('.health-text');
+        const healthIcon = healthItem.querySelector('.health-icon');
+        
+        if (data.status === 'healthy') {
+            healthText.textContent = 'Health: ✓ Healthy';
+            healthIcon.textContent = '💚';
+            healthItem.className = 'health-item healthy';
+        } else if (data.status === 'degraded') {
+            healthText.textContent = 'Health: ⚠ Degraded';
+            healthIcon.textContent = '💛';
+            healthItem.className = 'health-item degraded';
+        } else {
+            healthText.textContent = 'Health: ✗ Unhealthy';
+            healthIcon.textContent = '❤️';
+            healthItem.className = 'health-item unhealthy';
+        }
+        
+        // Store health data for modal
+        healthItem.dataset.healthData = JSON.stringify(data);
+    } catch (error) {
+        console.error('Failed to check health:', error);
+        const healthItem = document.getElementById('healthStatus');
+        const healthText = healthItem.querySelector('.health-text');
+        healthText.textContent = 'Health: Error';
+        healthItem.className = 'health-item error';
+    }
+}
+
+// Update memory status
+async function updateMemoryStatus() {
+    try {
+        const response = await fetch('/memusage');
+        const data = await response.json();
+        
+        const memoryItem = document.getElementById('memoryStatus');
+        const memoryText = memoryItem.querySelector('.health-text');
+        
+        const processMB = data.process.rss_mb;
+        const processPercent = data.process.percent;
+        
+        memoryText.textContent = `RAM: ${processMB}MB (${processPercent}%)`;
+        
+        // Color code based on percentage
+        if (processPercent < 50) {
+            memoryItem.className = 'health-item healthy';
+        } else if (processPercent < 75) {
+            memoryItem.className = 'health-item degraded';
+        } else {
+            memoryItem.className = 'health-item unhealthy';
+        }
+        
+        // Store memory data for tooltip
+        memoryItem.title = `Process: ${processMB}MB | System: ${data.system.used_mb}/${data.system.total_mb}MB (${data.system.percent}%)`;
+    } catch (error) {
+        console.error('Failed to check memory:', error);
+        const memoryItem = document.getElementById('memoryStatus');
+        const memoryText = memoryItem.querySelector('.health-text');
+        memoryText.textContent = 'RAM: Error';
+    }
+}
+
+// Show health details modal
+function showHealthDetails() {
+    const healthItem = document.getElementById('healthStatus');
+    const healthData = JSON.parse(healthItem.dataset.healthData || '{}');
+    
+    const modal = document.getElementById('healthModal');
+    const modalBody = document.getElementById('healthModalBody');
+    
+    let html = `<div class="health-details">`;
+    html += `<div class="health-status-badge ${healthData.status}">${healthData.status.toUpperCase()}</div>`;
+    
+    if (healthData.reason) {
+        html += `<div class="health-reason"><strong>Reason:</strong> ${healthData.reason}</div>`;
+    }
+    
+    if (healthData.checks) {
+        html += `<h4>Health Checks:</h4><div class="health-checks">`;
+        
+        for (const [key, value] of Object.entries(healthData.checks)) {
+            const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            let displayValue = value;
+            
+            if (typeof value === 'boolean') {
+                displayValue = value ? '✓ Yes' : '✗ No';
+            } else if (typeof value === 'number') {
+                displayValue = value.toLocaleString();
+            }
+            
+            html += `
+                <div class="health-check-item">
+                    <span class="check-label">${displayKey}:</span>
+                    <span class="check-value ${typeof value === 'boolean' ? (value ? 'success' : 'error') : ''}">${displayValue}</span>
+                </div>
+            `;
+        }
+        
+        html += `</div>`;
+    }
+    
+    html += `</div>`;
+    modalBody.innerHTML = html;
+    modal.style.display = 'flex';
+}
+
+// Close health modal
+function closeHealthModal() {
+    const modal = document.getElementById('healthModal');
+    modal.style.display = 'none';
 }
 
 // Load world status data

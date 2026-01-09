@@ -54,6 +54,16 @@
                     <span class="status-indicator"></span>
                     <span class="status-text">Connecting...</span>
                 </div>
+                <div class="system-health" id="systemHealth">
+                    <div class="health-item" id="healthStatus" title="Click for details">
+                        <span class="health-icon">❤️</span>
+                        <span class="health-text">Health: --</span>
+                    </div>
+                    <div class="health-item" id="memoryStatus" title="Memory usage">
+                        <span class="health-icon">💾</span>
+                        <span class="health-text">RAM: --</span>
+                    </div>
+                </div>
                 <div class="status-times" id="statusTimes">
                     <div class="status-time-item world-status-dropdown">
                         <span class="time-label">Last Update:</span>
@@ -76,6 +86,19 @@
                 <button id="manualUpdate" class="btn-update" title="Manually update rankings">
                     🔄 Update Now
                 </button>
+            </div>
+            
+            <!-- Health Details Modal -->
+            <div class="health-modal" id="healthModal" style="display: none;">
+                <div class="health-modal-content">
+                    <div class="health-modal-header">
+                        <h3>🏥 System Health Details</h3>
+                        <button class="modal-close" onclick="closeHealthModal()">&times;</button>
+                    </div>
+                    <div class="health-modal-body" id="healthModalBody">
+                        <p>Loading...</p>
+                    </div>
+                </div>
             </div>
         </header>
 

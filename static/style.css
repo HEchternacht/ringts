@@ -448,6 +448,189 @@ header p {
     font-size: 0.9em;
 }
 
+/* System Health Status */
+.system-health {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.15);
+    padding: 8px 15px;
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+}
+
+.health-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    transition: all 0.3s;
+    cursor: pointer;
+    font-size: 0.85em;
+    font-weight: 600;
+    border: 2px solid transparent;
+}
+
+.health-item:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.health-item.healthy {
+    border-color: rgba(76, 175, 80, 0.5);
+}
+
+.health-item.degraded {
+    border-color: rgba(255, 193, 7, 0.5);
+}
+
+.health-item.unhealthy {
+    border-color: rgba(244, 67, 54, 0.5);
+    animation: pulse-error 2s infinite;
+}
+
+.health-item.error {
+    border-color: rgba(158, 158, 158, 0.5);
+}
+
+@keyframes pulse-error {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(244, 67, 54, 0);
+    }
+}
+
+.health-icon {
+    font-size: 1.2em;
+}
+
+.health-text {
+    color: white;
+    white-space: nowrap;
+}
+
+/* Health Modal */
+.health-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.3s;
+}
+
+.health-modal-content {
+    background: white;
+    border-radius: 16px;
+    max-width: 600px;
+    width: 90%;
+    max-height: 80vh;
+    overflow: hidden;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+.health-modal-header {
+    background: linear-gradient(135deg, #FFC500 0%, #C21500 100%);
+    color: white;
+    padding: 20px 25px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.health-modal-header h3 {
+    margin: 0;
+    font-size: 1.3em;
+}
+
+.health-modal-body {
+    padding: 25px;
+    overflow-y: auto;
+    max-height: calc(80vh - 80px);
+}
+
+.health-details {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.health-status-badge {
+    display: inline-block;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 700;
+    text-align: center;
+    font-size: 1.1em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.health-status-badge.healthy {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    color: white;
+}
+
+.health-status-badge.degraded {
+    background: linear-gradient(135deg, #FFC107, #FFA000);
+    color: white;
+}
+
+.health-status-badge.unhealthy {
+    background: linear-gradient(135deg, #f44336, #d32f2f);
+    color: white;
+}
+
+.health-reason {
+    padding: 15px;
+    background: rgba(255, 193, 7, 0.1);
+    border-left: 4px solid #FFC107;
+    border-radius: 6px;
+    color: #333;
+}
+
+.health-checks {
+    display: grid;
+    gap: 12px;
+}
+
+.health-check-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 15px;
+    background: #f5f5f5;
+    border-radius: 8px;
+    border-left: 4px solid #e0e0e0;
+}
+
+.check-label {
+    font-weight: 600;
+    color: #555;
+}
+
+.check-value {
+    font-weight: 700;
+    color: #333;
+}
+
+.check-value.success {
+    color: #4CAF50;
+}
+
+.check-value.error {
+    color: #f44336;
+}
+
 /* Status Times */
 .status-times {
     display: flex;
