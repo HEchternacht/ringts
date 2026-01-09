@@ -221,7 +221,6 @@ class Database:
         self.deltavip_file = f"{folder}/deltavip.csv"
         self.lock = threading.Lock()
         self.reset_done_today = False  # Flag to avoid multiple reset checks
-        self.skip_next_deltas = False  # Flag to skip first delta after daily reset
         
         # Ensure data directory exists
         if not os.path.exists(folder):
@@ -411,7 +410,7 @@ class Database:
                     # Existing player - calculate delta
                     prev_exp = exps_dict[name]['exp']
                     deltaexp = exp - prev_exp
-                    if deltaexp != 0 and not self.skip_next_deltas:
+                    if deltaexp != 0:
                         delta_key = (name, update_time)
                         if delta_key not in deltas_set:
                             new_deltas.append({
@@ -436,8 +435,6 @@ class Database:
                             'world': world,
                             'guild': guild
                         })
-                    elif deltaexp != 0 and self.skip_next_deltas:
-                        log_console(f"Skipping first delta after reset for {name}: {deltaexp} ({world} - {guild})", "INFO")
                     
                     # Mark player for update
                     exps_updates[name] = {'exp': exp, 'last update': last_update, 'world': world, 'guild': guild}
@@ -451,33 +448,29 @@ class Database:
                         'guild': guild
                     })
                     
-                    # Skip delta for new players if we just reset
-                    if not self.skip_next_deltas:
-                        delta_key = (name, update_time)
-                        if delta_key not in deltas_set:
-                            new_deltas.append({
-                                'name': name, 
-                                'deltaexp': exp, 
-                                'update time': update_time,
-                                'world': world,
-                                'guild': guild
-                            })
-                            log_console(f"New player: {name} with {exp} EXP ({world} - {guild})")
-                        else:
-                            deltas_updates[delta_key] = exp
-                            log_console(f"Updated duplicate for new player {name} at {update_time} (latest)", "INFO")
-                        
-                        # Broadcast to delta stream
-                        delta_queue.put({
-                            'name': name,
-                            'deltaexp': int(exp),
-                            'update_time': update_time.isoformat(),
-                            'prev_update_time': prev_update_time.isoformat(),
+                    delta_key = (name, update_time)
+                    if delta_key not in deltas_set:
+                        new_deltas.append({
+                            'name': name, 
+                            'deltaexp': exp, 
+                            'update time': update_time,
                             'world': world,
                             'guild': guild
                         })
+                        log_console(f"New player: {name} with {exp} EXP ({world} - {guild})")
                     else:
-                        log_console(f"Skipping first delta after reset for new player {name}: {exp} ({world} - {guild})", "INFO")
+                        deltas_updates[delta_key] = exp
+                        log_console(f"Updated duplicate for new player {name} at {update_time} (latest)", "INFO")
+                    
+                    # Broadcast to delta stream
+                    delta_queue.put({
+                        'name': name,
+                        'deltaexp': int(exp),
+                        'update_time': update_time.isoformat(),
+                        'prev_update_time': prev_update_time.isoformat(),
+                        'world': world,
+                        'guild': guild
+                    })
             
             # Free df after processing all rows
             del df
@@ -497,11 +490,6 @@ class Database:
                 exps = pd.concat([exps, pd.DataFrame(new_exps)], ignore_index=True)
             if new_deltas:
                 deltas = pd.concat([deltas, pd.DataFrame(new_deltas)], ignore_index=True)
-            
-            # Reset the skip flag after processing all players in this update
-            if self.skip_next_deltas:
-                self.skip_next_deltas = False
-                log_console("Reset skip_next_deltas flag - next update will record deltas normally", "INFO")
             
             # Write changes to storage immediately
             self._write_exps(exps)
@@ -584,8 +572,6 @@ class Database:
                 f.write(today_str)
             
             self.reset_done_today = True  # Mark flag after successful reset
-            self.skip_next_deltas = True  # Skip the first delta after reset
-            log_console("Set skip_next_deltas flag - next update will skip recording deltas", "INFO")
             
             # Also reset VIP data
             self._reset_vip_daily()
