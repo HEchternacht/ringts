@@ -40,6 +40,7 @@ DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
+MAX_MEMORY_MB = 500  # Maximum memory usage in MB before triggering garbage collection
 
 FORCE_PROXY=True if os.environ.get('FORCE_PROXY', None) == 'true' else False
 
@@ -499,7 +500,7 @@ class Database:
             
             # Free memory
             del exps_dict, deltas_set, new_deltas, new_exps, exps_updates, deltas_updates, exps, deltas
-            gc.collect()
+            clean_memory()
     
     def get_exps(self):
         """Get all player EXP data"""
@@ -777,6 +778,29 @@ def log_console(message, level="INFO"):
     console_queue.put(log_entry)
 
 
+def clean_memory():
+    """Check memory usage and trigger garbage collection if exceeds MAX_MEMORY_MB"""
+    try:
+        process = psutil.Process(os.getpid())
+        mem_info = process.memory_info()
+        current_mb = mem_info.rss / (1024 * 1024)
+        
+        if current_mb > MAX_MEMORY_MB:
+            log_console(f"Memory usage ({current_mb:.2f}MB) exceeds limit ({MAX_MEMORY_MB}MB), triggering garbage collection", "WARNING")
+            gc.collect()
+            
+            # Check memory after collection
+            mem_info_after = process.memory_info()
+            after_mb = mem_info_after.rss / (1024 * 1024)
+            freed_mb = current_mb - after_mb
+            log_console(f"Garbage collection completed. Freed {freed_mb:.2f}MB. Current: {after_mb:.2f}MB", "INFO")
+            return True
+        return False
+    except Exception as e:
+        log_console(f"Error in clean_memory: {str(e)}", "ERROR")
+        return False
+
+
 
 
 
@@ -830,7 +854,7 @@ def extract_tables(soup):
             dataframes.append(df)
 
     del rows, headers
-    gc.collect()
+    clean_memory()
     return dataframes
 
 
@@ -1354,7 +1378,7 @@ def loop_get_rankings(database, debug=False):
                         
                         # Free memory after database update
                         del combined_df
-                        gc.collect()
+                        clean_memory()
                         
                         # Scrape VIP data for THIS specific world
                         
@@ -1958,7 +1982,8 @@ def healthz():
         # Check 3: Recent updates (has there been an update in the last 2 hours?)
         if db_accessible and not deltas.empty:
             last_update = deltas['update time'].max()
-            time_since_update = datetime.now() - last_update
+            current_time = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+            time_since_update = current_time - last_update
             minutes_since_update = time_since_update.total_seconds() / 60
             health_status['checks']['last_update'] = last_update.isoformat()
             health_status['checks']['minutes_since_last_update'] = round(minutes_since_update, 2)
