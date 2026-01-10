@@ -23,4 +23,5 @@ dependencies = [
     "requests>=2.32.5",
     "sqlalchemy>=2.0.45",
     "uvicorn>=0.40.0",
+    "waitress>=3.0.2",
 ]

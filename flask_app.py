@@ -22,6 +22,7 @@ from concurrent.futures import TimeoutError, as_completed
 import time
 import threading
 import psutil
+from waitress import serve
 
 # Configure aggressive garbage collection for memory efficiency
 gc.set_threshold(700, 10, 5)  # More aggressive than default (700, 10, 10)
@@ -179,6 +180,8 @@ def get_multiple(url: str, proxies: list):
                     # Signal all other threads to stop
                     success_flag.set()
                     # Return IMMEDIATELY - don't wait for anything
+                    del pool
+                    gc.collect()
                     return result['object']
                     
             except TimeoutError:
@@ -189,7 +192,8 @@ def get_multiple(url: str, proxies: list):
     finally:
         # Close pool without waiting
         pool.close()
-        
+        del pool
+        clean_memory()
     return None
 
 
@@ -207,7 +211,7 @@ scraper_thread = None  # Reference to the scraper thread for health checks
 
 class Database:
     """
-    Database abstraction layer for storing player EXP data.
+    Database abstraction layer for storing player EXP data.s
     Currently uses CSV files, designed to be easily swappable with SQLite.
     """
     def __init__(self, folder=None):
@@ -2849,4 +2853,6 @@ def get_vip_graph():
 
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    # Use Waitress for production-ready deployment
+    log_console("Starting Waitress server on 0.0.0.0:5000", "INFO")
+    serve(app, host='0.0.0.0', port=5000, threads=1, channel_timeout=300)
