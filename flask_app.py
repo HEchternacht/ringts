@@ -40,7 +40,7 @@ DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
-MAX_MEMORY_MB = 500  # Maximum memory usage in MB before triggering garbage collection
+MAX_MEMORY_MB = 350  # Maximum memory usage in MB before triggering garbage collection
 
 FORCE_PROXY=True if os.environ.get('FORCE_PROXY', None) == 'true' else False
 
@@ -522,6 +522,11 @@ class Database:
         if update_time is None:
             return False
         
+        # Check if update_time is NaT (invalid) and skip if so
+        if pd.isna(update_time):
+            log_console("Invalid update_time (NaT) passed to check_and_reset_daily, skipping", "WARNING")
+            return False
+        
         with self.lock:
             now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)  # Apply timezone offset
             today_str = now.strftime("%Y-%m-%d")
@@ -529,6 +534,10 @@ class Database:
             # Convert update_time to datetime if it's not already
             if isinstance(update_time, str):
                 update_time = pd.to_datetime(update_time)
+                # Check again after conversion
+                if pd.isna(update_time):
+                    log_console("Invalid update_time (NaT) after conversion, skipping", "WARNING")
+                    return False
             
             # Check if update is after daily reset time
             reset_time = now.replace(hour=DAILY_RESET_HOUR, minute=DAILY_RESET_MINUTE, second=0, microsecond=0)
@@ -1313,6 +1322,11 @@ def loop_get_rankings(database, debug=False):
                     continue
                 
                 current_update = pd.to_datetime(daily_raw['last update'].values[0])
+                
+                # Skip if update time is NaT (invalid)
+                if pd.isna(current_update):
+                    log_console(f"Invalid update time (NaT) for world '{world}', skipping", "WARNING")
+                    continue
                 
                 # Check if this world has a new update
                 if world not in last_updates or last_updates[world] != current_update:
