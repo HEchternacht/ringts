@@ -22,7 +22,6 @@ from concurrent.futures import TimeoutError, as_completed
 import time
 import threading
 import psutil
-from waitress import serve
 
 # Configure aggressive garbage collection for memory efficiency
 gc.set_threshold(700, 10, 5)  # More aggressive than default (700, 10, 10)
@@ -2852,4 +2851,4 @@ def get_vip_graph():
 if __name__ == '__main__':
     # Use Waitress for production-ready deployment
     log_console("Starting Waitress server on 0.0.0.0:5000", "INFO")
-    serve(app, host='0.0.0.0', port=5000, threads=1, channel_timeout=300)
+    app.run(host='0.0.0.0', port=5000)    
