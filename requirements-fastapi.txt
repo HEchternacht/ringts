@@ -14,6 +14,7 @@ numpy==1.26.3
 
 # Database
 sqlalchemy==2.0.25
+pytz==2024.1
 
 # Visualization
 plotly==5.18.0

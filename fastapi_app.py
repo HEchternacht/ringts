@@ -2225,6 +2225,10 @@ def loop_get_rankings(database, debug=False):
     ignore_updates = []
     while scraper_running:
         try:
+            # Check if daily reset is needed
+            if hasattr(database, 'check_daily_reset'):
+                database.check_daily_reset()
+            
             with scraper_lock:
                 scraper_state = "checking"
             

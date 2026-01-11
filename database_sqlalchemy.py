@@ -4,10 +4,11 @@ This maintains the same interface as the original CSV-based Database class.
 """
 import threading
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import json
 import os
+import pytz
 from database_models import (
     DatabaseManager, Player, Delta, VIP, VIPData, VIPDelta, 
     StatusData, ScrapingConfig
@@ -26,8 +27,14 @@ class SQLAlchemyDatabase:
         self.folder = folder
         self.db_path = f"{folder}/ringts.db"
         self.status_data_file = f"{folder}/status_data.json"  # Keep JSON for now
+        self.reset_date_file = f"{folder}/last_reset.txt"
         self.lock = threading.Lock()
         self.reset_done_today = False
+        
+        # Timezone configuration
+        self.timezone_offset_hours = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
+        self.daily_reset_hour = int(os.environ.get('DAILY_RESET_HOUR', '10'))
+        self.daily_reset_minute = int(os.environ.get('DAILY_RESET_MINUTE', '5'))
         
         # Create folder if it doesn't exist
         if not os.path.exists(folder):
@@ -38,6 +45,9 @@ class SQLAlchemyDatabase:
         
         # Initialize configurations
         self._initialize_scraping_config()
+        
+        # Check if daily reset is needed
+        self._check_and_perform_daily_reset()
         
     def _get_session(self):
         """Get a new database session."""
@@ -61,6 +71,78 @@ class SQLAlchemyDatabase:
                 print(f"Initialized scraping config with default")
         finally:
             session.close()
+    
+    def _get_local_datetime(self):
+        """Get current datetime adjusted for timezone offset."""
+        utc_now = datetime.utcnow()
+        local_now = utc_now + timedelta(hours=self.timezone_offset_hours)
+        return local_now
+    
+    def _get_last_reset_date(self) -> Optional[str]:
+        """Read the last reset date from file."""
+        try:
+            with open(self.reset_date_file, 'r') as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            return None
+    
+    def _save_last_reset_date(self, date_str: str):
+        """Save the last reset date to file."""
+        with open(self.reset_date_file, 'w') as f:
+            f.write(date_str)
+    
+    def _should_reset_today(self) -> bool:
+        """Check if daily reset should be performed."""
+        local_now = self._get_local_datetime()
+        today_str = local_now.strftime('%Y-%m-%d')
+        
+        # Check if reset already done today
+        last_reset = self._get_last_reset_date()
+        if last_reset == today_str:
+            return False
+        
+        # Check if it's past reset time
+        reset_time = local_now.replace(
+            hour=self.daily_reset_hour,
+            minute=self.daily_reset_minute,
+            second=0,
+            microsecond=0
+        )
+        
+        return local_now >= reset_time
+    
+    def _perform_daily_reset(self):
+        """Truncate the players (exps) table."""
+        print(f"[RESET] Performing daily reset at {self._get_local_datetime()}")
+        session = self._get_session()
+        try:
+            # Delete all players
+            deleted_count = session.query(Player).delete()
+            session.commit()
+            
+            # Save reset date
+            today_str = self._get_local_datetime().strftime('%Y-%m-%d')
+            self._save_last_reset_date(today_str)
+            self.reset_done_today = True
+            
+            print(f"[RESET] ✓ Daily reset complete - truncated {deleted_count} players")
+        except Exception as e:
+            session.rollback()
+            print(f"[RESET] ✗ Daily reset failed: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def _check_and_perform_daily_reset(self):
+        """Check if reset is needed and perform it. Called on initialization."""
+        if self._should_reset_today() and not self.reset_done_today:
+            self._perform_daily_reset()
+    
+    def check_daily_reset(self):
+        """Public method to check and perform daily reset. Call this periodically."""
+        with self.lock:
+            if self._should_reset_today() and not self.reset_done_today:
+                self._perform_daily_reset()
     
     def get_exps(self) -> pd.DataFrame:
         """Get all player experience data as DataFrame."""
@@ -299,7 +381,7 @@ class SQLAlchemyDatabase:
         """Update player EXP data and record deltas."""
         # Import here to avoid circular dependency
         import queue as q
-        
+        self._check_and_perform_daily_reset()
         with self.lock:
             session = self._get_session()
             try:
