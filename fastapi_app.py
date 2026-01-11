@@ -161,7 +161,6 @@ def get_multiple(url: str, proxies: list):
                     print(f"✓ Successful response via proxy: {result['proxy']}")
 
                     success_flag.set()
-                    del pool
                     gc.collect()
                     return result['object']
 
