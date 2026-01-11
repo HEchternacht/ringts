@@ -276,8 +276,8 @@ class SQLAlchemyDatabase:
 
             #check if ringts.db exists, if not, run migration
             if not os.path.exists(self.db_path):
-                from migrate_to_sqlite import migrate_csvs_to_sqlite
-                migrate_csvs_to_sqlite(folder)
+                from migrate_to_sqlite import migrate_csv_to_sqlite
+                migrate_csv_to_sqlite(folder)
 
             
             self.db_manager = DatabaseManager(db_path=self.db_path)
