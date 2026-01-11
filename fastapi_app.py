@@ -108,6 +108,7 @@ pp = ['http://103.155.62.141:8081',
 def get_multiple(url: str, proxies: list):
     tic = time.time()
     success_flag = threading.Event()
+    pool = None
 
     def get_resp(url, proxy):
         if success_flag.is_set():
@@ -170,9 +171,10 @@ def get_multiple(url: str, proxies: list):
                 pass
 
     finally:
-        pool.close()
-        del pool
-        gc.collect()
+        if pool is not None:
+            pool.close()
+            del pool
+            gc.collect()
     return None
 
 
