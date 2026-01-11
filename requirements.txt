@@ -111,3 +111,4 @@ uvloop==0.22.1
 httptools==0.7.1
 psutil==7.2.1
 waitress==3.0.2
+python-multipart==0.0.21
