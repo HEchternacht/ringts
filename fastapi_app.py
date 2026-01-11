@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTM
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
+
 from typing import Optional, List
 import pandas as pd
 import plotly.graph_objects as go
@@ -45,14 +46,14 @@ app.add_middleware(
 # Templates MUST be initialized before mounting static files
 templates = Jinja2Templates(directory="templates")
 
-# Mount static files AFTER creating the app routes (done at the end)
-# This prevents the "No route exists for name 'static'" error
+# Mount static files immediately after templates
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Configuration from environment variables
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
@@ -319,7 +320,29 @@ class Database:
     def get_vips(self):
         try:
             with open(self.vips_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                content = f.read().strip()
+                if not content:
+                    return []
+                
+                # Try JSON first
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    # Fall back to CSV format (legacy)
+                    log_console("Migrating VIPs from CSV to JSON format", "INFO")
+                    vips = []
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line and ',' in line:
+                            parts = line.split(',', 1)
+                            if len(parts) == 2:
+                                vips.append({'name': parts[0].strip(), 'world': parts[1].strip()})
+                    
+                    # Save in JSON format
+                    if vips:
+                        with open(self.vips_file, 'w', encoding='utf-8') as fw:
+                            json.dump(vips, fw, indent=2)
+                    return vips
         except FileNotFoundError:
             return []
 
@@ -1181,11 +1204,11 @@ async def internal_error_handler(request: Request, exc: Exception):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Main page"""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse("index_fast.html", {"request": request})
 
 
 @app.get("/api/players")
-async def get_players(world: Optional[str] = Query(None), guild: Optional[str] = Query(None)):
+def get_players(world: Optional[str] = Query(None), guild: Optional[str] = Query(None)):
     """Get list of all players"""
     deltas = db.get_deltas()
 
@@ -1199,7 +1222,7 @@ async def get_players(world: Optional[str] = Query(None), guild: Optional[str] =
 
 
 @app.get("/api/date-range")
-async def get_date_range(world: Optional[str] = Query(None), guild: Optional[str] = Query(None)):
+def get_date_range(world: Optional[str] = Query(None), guild: Optional[str] = Query(None)):
     """Get available date range"""
     deltas = db.get_deltas()
 
@@ -1219,7 +1242,7 @@ async def get_date_range(world: Optional[str] = Query(None), guild: Optional[str
 
 
 @app.post("/api/graph")
-async def get_graph(request: GraphRequest):
+def get_graph(request: GraphRequest):
     """Generate interactive graph with stats and comparison data"""
     names = request.names
     datetime1 = request.datetime1
@@ -1270,7 +1293,7 @@ async def get_graph(request: GraphRequest):
 
 
 @app.post("/api/stats")
-async def get_stats(request: StatsRequest):
+def get_stats(request: StatsRequest):
     """Get player statistics"""
     names = request.names
     datetime1 = request.datetime1
@@ -1284,7 +1307,7 @@ async def get_stats(request: StatsRequest):
 
 
 @app.get("/api/top-players")
-async def get_top_players(limit: int = Query(10), datetime1: Optional[str] = Query(None),
+def get_top_players(limit: int = Query(10), datetime1: Optional[str] = Query(None),
                           datetime2: Optional[str] = Query(None)):
     """Get top players by total EXP"""
     table = db.get_deltas()
@@ -1299,7 +1322,7 @@ async def get_top_players(limit: int = Query(10), datetime1: Optional[str] = Que
 
 
 @app.get("/api/recent-updates")
-async def get_recent_updates(limit: int = Query(20)):
+def get_recent_updates(limit: int = Query(20)):
     """Get recent EXP updates"""
     deltas = db.get_deltas()
     recent = deltas.sort_values('update time', ascending=False).head(limit)
@@ -1312,7 +1335,7 @@ async def get_recent_updates(limit: int = Query(20)):
 
 
 @app.post("/api/rankings-table")
-async def get_rankings_table(request: RankingsRequest):
+def get_rankings_table(request: RankingsRequest):
     """Get grouped rankings table with filters and sorting"""
     datetime1 = request.datetime1
     datetime2 = request.datetime2
@@ -1355,10 +1378,10 @@ async def get_rankings_table(request: RankingsRequest):
 
 
 @app.get("/api/console-stream")
-async def console_stream():
+def console_stream():
     """Server-Sent Events stream for console logs"""
 
-    async def generate():
+    def generate():
         yield f"data: [CONNECTED] Console stream started\n\n"
 
         while True:
@@ -1367,7 +1390,7 @@ async def console_stream():
                 yield f"data: {log}\n\n"
             except queue.Empty:
                 yield f": keepalive\n\n"
-                await asyncio.sleep(1)
+                time.sleep(1)
 
     return StreamingResponse(generate(), media_type='text/event-stream')
 
@@ -1391,7 +1414,7 @@ async def get_scraper_status():
 
 
 @app.get("/healthz")
-async def healthz():
+def healthz():
     """Health check endpoint"""
     try:
         health_status = {
@@ -1510,7 +1533,7 @@ async def download_exps():
 
 
 @app.post("/api/upload/deltas")
-async def upload_deltas(password: str = Form(...), file: UploadFile = File(...)):
+def upload_deltas(password: str = Form(...), file: UploadFile = File(...)):
     """Upload deltas.csv file"""
     try:
         if password != UPLOAD_PASSWORD:
@@ -1519,7 +1542,7 @@ async def upload_deltas(password: str = Form(...), file: UploadFile = File(...))
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail='Only CSV files are allowed')
 
-        contents = await file.read()
+        contents = file.read()
         df = pd.read_csv(StringIO(contents.decode('utf-8')),
                          dtype={'name': str, 'deltaexp': 'int64', 'world': str, 'guild': str},
                          parse_dates=['update time'])
@@ -1549,7 +1572,7 @@ async def upload_deltas(password: str = Form(...), file: UploadFile = File(...))
 
 
 @app.post("/api/upload/exps")
-async def upload_exps(password: str = Form(...), file: UploadFile = File(...)):
+def upload_exps(password: str = Form(...), file: UploadFile = File(...)):
     """Upload exps.csv file"""
     try:
         if password != UPLOAD_PASSWORD:
@@ -1558,7 +1581,7 @@ async def upload_exps(password: str = Form(...), file: UploadFile = File(...)):
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail='Only CSV files are allowed')
 
-        contents = await file.read()
+        contents = file.read()
         df = pd.read_csv(StringIO(contents.decode('utf-8')),
                          dtype={'name': str, 'exp': 'int64', 'world': str, 'guild': str},
                          parse_dates=['last update'])
@@ -1588,7 +1611,7 @@ async def upload_exps(password: str = Form(...), file: UploadFile = File(...)):
 
 
 @app.get("/api/player-graph/{player_name}")
-async def get_player_graph(player_name: str = PathParam(...), datetime1: Optional[str] = Query(None),
+def get_player_graph(player_name: str = PathParam(...), datetime1: Optional[str] = Query(None),
                            datetime2: Optional[str] = Query(None)):
     """Get individual player graph data"""
     try:
@@ -1600,7 +1623,7 @@ async def get_player_graph(player_name: str = PathParam(...), datetime1: Optiona
 
 
 @app.get("/api/player-details/{player_name}")
-async def get_player_details(player_name: str = PathParam(...)):
+def get_player_details(player_name: str = PathParam(...)):
     """Get detailed player data"""
     try:
         player_data = scrape_player_data(player_name)
@@ -1652,7 +1675,7 @@ async def get_player_details(player_name: str = PathParam(...)):
 
 
 @app.get("/api/delta")
-async def get_deltas(limit: int = Query(100), world: Optional[str] = Query(None),
+def get_deltas(limit: int = Query(100), world: Optional[str] = Query(None),
                      guild: Optional[str] = Query(None)):
     """Get recent delta updates"""
     try:
@@ -1758,7 +1781,7 @@ async def update_scraping_config(request: ScrapingConfigUpdate):
 
 
 @app.post("/api/manual-update")
-async def manual_update():
+def manual_update():
     """Manually trigger a ranking update"""
     global scraper_state
 
@@ -1842,7 +1865,7 @@ async def manual_update():
 @app.get("/vip", response_class=HTMLResponse)
 async def vip_page(request: Request):
     """VIP tracking page"""
-    return templates.TemplateResponse("vip.html", {"request": request})
+    return templates.TemplateResponse("vip_fast.html", {"request": request})
 
 
 @app.get("/api/vip/list")
@@ -1857,7 +1880,7 @@ async def get_vip_list():
 
 
 @app.post("/api/vip/add")
-async def add_vip(request: VIPAdd):
+def add_vip(request: VIPAdd):
     """Add a VIP player"""
     try:
         if not request.name or not request.world:
@@ -1962,7 +1985,7 @@ async def get_vip_deltas(limit: int = Query(100), name: Optional[str] = Query(No
 
 
 @app.post("/api/vip/graph")
-async def get_vip_graph(request: VIPGraphRequest):
+def get_vip_graph(request: VIPGraphRequest):
     """Generate VIP graph with exp and online time"""
     try:
         name = request.name
@@ -2356,9 +2379,6 @@ def start_scraper_thread(database):
 # Initialize database and start scraper
 db.load()
 start_scraper_thread(db)
-
-# Mount static files AFTER all routes are defined
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 if __name__ == '__main__':
