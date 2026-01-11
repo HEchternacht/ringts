@@ -27,7 +27,7 @@ from concurrent.futures import TimeoutError, as_completed
 import psutil
 import asyncio
 from pydantic import BaseModel
-
+from database_sqlalchemy import SQLAlchemyDatabase
 # Configure aggressive garbage collection for memory efficiency
 gc.set_threshold(700, 10, 5)
 gc.enable()
@@ -1160,7 +1160,7 @@ def get_player_stats(names, database, datetime1=None, datetime2=None):
 
 
 # Initialize database
-db = Database()
+db = SQLAlchemyDatabase()
 
 # Exception handlers
 @app.exception_handler(400)
@@ -2214,7 +2214,7 @@ def scrape_vip_data(database, world):
 
 def loop_get_rankings(database, debug=False):
     """Background loop to continuously fetch rankings"""
-    database.load()
+    database.load(DATA_FOLDER)
     global scraper_running, scraper_state
     scraper_running = True
     
