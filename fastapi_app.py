@@ -92,6 +92,10 @@ class VIPGraphRequest(BaseModel):
     name: str
     world: str
 
+class MakerGraphRequest(BaseModel):
+    name: str
+    world: str
+
 pp = ['http://103.155.62.141:8081',
       'http://45.177.16.137:999',
       'http://190.242.157.215:8080',
@@ -1202,6 +1206,25 @@ async def internal_error_handler(request: Request, exc: Exception):
 
 # API Endpoints
 
+@app.post("/api/admin/cleanup-database")
+def cleanup_database(password: str = Query(...)):
+    """Clean up corrupted database records"""
+    try:
+        if password != UPLOAD_PASSWORD:
+            raise HTTPException(status_code=401, detail='Invalid password')
+        
+        log_console("Starting database cleanup for corrupted records", "INFO")
+        db.cleanup_corrupted_delta_records()
+        
+        return {
+            'success': True,
+            'message': 'Database cleanup completed successfully'
+        }
+    except Exception as e:
+        log_console(f"Database cleanup failed: {str(e)}", "ERROR")
+        raise HTTPException(status_code=500, detail=f'Cleanup failed: {str(e)}')
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Main page"""
@@ -1630,6 +1653,7 @@ def get_player_details(player_name: str = PathParam(...)):
         player_data = scrape_player_data(player_name)
 
         if player_data.get('success') and player_data.get('tables'):
+            # Check VIPs
             vips = db.get_vips()
             matching_vip = next((v for v in vips if v['name'] == player_name), None)
 
@@ -1668,6 +1692,46 @@ def get_player_details(player_name: str = PathParam(...)):
                         log_console(f"VIP delta processed: {player_name} +{delta_exp} exp, +{delta_online} online",
                                     "INFO")
                         db.update_vipdata(player_name, world, today_exp, today_online)
+
+            # Check Makers
+            makers = db.get_makers()
+            matching_maker = next((m for m in makers if m['name'] == player_name), None)
+
+            if matching_maker:
+                world = matching_maker['world']
+                today_exp = 0
+                today_online = 0
+
+                for table in player_data['tables']:
+                    columns = table['columns']
+                    data = table['data']
+
+                    if 'Raw XP no dia' in columns and data:
+                        idx = columns.index('Raw XP no dia')
+                        raw_value = data[0][idx] if len(data[0]) > idx else "0"
+                        today_exp = int(raw_value.replace(',', '').replace('.', ''))
+
+                    if 'Online time' in columns and data:
+                        idx = columns.index('Online time')
+                        online_time_str = data[0][idx] if len(data[0]) > idx else "0:00"
+                        today_online = parse_online_time_to_minutes(online_time_str)
+
+                makersdata = db.get_makersdata()
+                existing_maker = makersdata[(makersdata['name'] == player_name) & (makersdata['world'] == world)]
+
+                if not existing_maker.empty:
+                    old_exp = existing_maker['today_exp'].values[0]
+                    old_online = existing_maker['today_online'].values[0]
+                    delta_exp = today_exp - old_exp
+                    delta_online = today_online - old_online
+
+                    if delta_online != 0:  # For makers, focus on online time
+                        now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                        today_date = now.strftime("%Y-%m-%d")
+                        db.add_maker_delta(player_name, world, today_date, delta_exp, delta_online, now)
+                        log_console(f"Maker delta processed: {player_name} +{delta_exp} exp, +{delta_online} online",
+                                    "INFO")
+                        db.update_makerdata(player_name, world, today_exp, today_online)
 
         return player_data
     except Exception as e:
@@ -1967,15 +2031,35 @@ async def get_vip_deltas(limit: int = Query(100), name: Optional[str] = Query(No
             else:
                 prev_update_time = current_time
 
-            deltas.append({
-                'name': current_name,
-                'world': current_world,
-                'delta_exp': int(row.delta_exp),
-                'delta_online': int(row.delta_online),
-                'update_time': current_time.isoformat(),
-                'prev_update_time': prev_update_time.isoformat(),
-                'date': row.date
-            })
+            # Handle potential data corruption - skip records with invalid data
+            try:
+                delta_exp_value = row.delta_exp
+                delta_online_value = row.delta_online
+                
+                # Check if values are bytes (corrupted data)
+                if isinstance(delta_exp_value, bytes):
+                    log_console(f"Skipping corrupted VIP delta record for {current_name} ({current_world}): delta_exp is bytes", "WARNING")
+                    continue
+                if isinstance(delta_online_value, bytes):
+                    log_console(f"Skipping corrupted VIP delta record for {current_name} ({current_world}): delta_online is bytes", "WARNING")
+                    continue
+                
+                # Convert to int, handling potential float values
+                delta_exp_int = int(float(delta_exp_value)) if delta_exp_value is not None else 0
+                delta_online_int = int(float(delta_online_value)) if delta_online_value is not None else 0
+                
+                deltas.append({
+                    'name': current_name,
+                    'world': current_world,
+                    'delta_exp': delta_exp_int,
+                    'delta_online': delta_online_int,
+                    'update_time': current_time.isoformat(),
+                    'prev_update_time': prev_update_time.isoformat(),
+                    'date': row.date
+                })
+            except (ValueError, TypeError) as e:
+                log_console(f"Skipping VIP delta record for {current_name} ({current_world}) due to conversion error: {str(e)}", "WARNING")
+                continue
 
         del deltavip, original_deltavip, recent_deltas
         gc.collect()
@@ -2196,6 +2280,395 @@ def get_vip_graph(request: VIPGraphRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def parse_online_time_to_minutes(time_str):
+    """Parse online time string to total minutes"""
+    if not time_str or time_str == "0:00":
+        return 0
+    
+    total_minutes = 0
+    time_str = time_str.strip()
+    
+    if 'h' in time_str:
+        parts = time_str.split('h')
+        hours = int(parts[0].strip())
+        total_minutes += hours * 60
+        remaining = parts[1].strip() if len(parts) > 1 else ""
+    else:
+        remaining = time_str
+    
+    if 'm' in remaining:
+        minutes_str = remaining.split('m')[0].strip()
+        if minutes_str:
+            minutes = int(minutes_str)
+            total_minutes += minutes
+    
+    return total_minutes
+
+
+@app.get("/makers", response_class=HTMLResponse)
+async def makers_page(request: Request):
+    """Makers tracking page"""
+    return templates.TemplateResponse("makers_fast.html", {"request": request})
+
+
+@app.get("/api/makers/list")
+async def get_makers_list():
+    """Get list of Maker players"""
+    try:
+        makers = db.get_makers()
+        return {'makers': makers}
+    except Exception as e:
+        log_console(f"Error getting Makers list: {str(e)}", "ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/makers/main")
+async def get_main_makers_list():
+    """Get list of main Maker players (characters that have makers)"""
+    try:
+        main_makers = db.get_main_makers()
+        return {'main_makers': main_makers}
+    except Exception as e:
+        log_console(f"Error getting main Makers list: {str(e)}", "ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/makers/deltas")
+async def get_makers_deltas(limit: int = Query(100), name: Optional[str] = Query(None),
+                            world: Optional[str] = Query(None)):
+    """Get Makers delta history"""
+    try:
+        deltamaker = db.get_deltamaker()
+
+        if deltamaker.empty:
+            return {'deltas': []}
+
+        original_deltamaker = deltamaker.copy()
+
+        if name:
+            deltamaker = deltamaker[deltamaker['name'] == name]
+            original_deltamaker = original_deltamaker[original_deltamaker['name'] == name]
+        if world:
+            deltamaker = deltamaker[deltamaker['world'] == world]
+            original_deltamaker = original_deltamaker[original_deltamaker['world'] == world]
+
+        deltamaker = deltamaker[deltamaker['delta_online'] != 0]
+
+        if deltamaker.empty:
+            return {'deltas': []}
+
+        recent_deltas = deltamaker.sort_values('update_time', ascending=False).head(limit)
+
+        deltas = []
+        for row in recent_deltas.itertuples(index=False):
+            current_time = row[5]
+            current_name = row.name
+            current_world = row.world
+
+            maker_history = original_deltamaker[
+                (original_deltamaker['name'] == current_name) &
+                (original_deltamaker['world'] == current_world) &
+                (original_deltamaker['update_time'] < current_time)
+                ].sort_values('update_time', ascending=False)
+
+            if not maker_history.empty:
+                last_entry = maker_history.iloc[0]
+                if last_entry['delta_online'] == 0:
+                    prev_update_time = last_entry['update_time']
+                else:
+                    prev_update_time = last_entry['update_time']
+            else:
+                prev_update_time = current_time
+
+            # Handle potential data corruption - skip records with invalid data
+            try:
+                delta_exp_value = row.delta_exp
+                delta_online_value = row.delta_online
+                
+                # Check if values are bytes (corrupted data)
+                if isinstance(delta_exp_value, bytes):
+                    log_console(f"Skipping corrupted Maker delta record for {current_name} ({current_world}): delta_exp is bytes", "WARNING")
+                    continue
+                if isinstance(delta_online_value, bytes):
+                    log_console(f"Skipping corrupted Maker delta record for {current_name} ({current_world}): delta_online is bytes", "WARNING")
+                    continue
+                
+                # Convert to int, handling potential float values
+                delta_exp_int = int(float(delta_exp_value)) if delta_exp_value is not None else 0
+                delta_online_int = int(float(delta_online_value)) if delta_online_value is not None else 0
+                
+                deltas.append({
+                    'name': current_name,
+                    'world': current_world,
+                    'delta_exp': delta_exp_int,
+                    'delta_online': delta_online_int,
+                    'update_time': current_time.isoformat(),
+                    'prev_update_time': prev_update_time.isoformat(),
+                    'date': row.date
+                })
+            except (ValueError, TypeError) as e:
+                log_console(f"Skipping Maker delta record for {current_name} ({current_world}) due to conversion error: {str(e)}", "WARNING")
+                continue
+
+        del deltamaker, original_deltamaker, recent_deltas
+        gc.collect()
+        return {'deltas': deltas}
+    except Exception as e:
+        log_console(f"Error getting Makers deltas: {str(e)}", "ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/makers/graph")
+def get_makers_graph(request: MakerGraphRequest):
+    """Generate Makers graph with exp and online time"""
+    try:
+        name = request.name
+        world = request.world
+
+        if not name or not world:
+            raise HTTPException(status_code=400, detail='Name and world are required')
+
+        deltamaker = db.get_deltamaker()
+        maker_data = deltamaker[(deltamaker['name'] == name) & (deltamaker['world'] == world)]
+
+        if maker_data.empty:
+            # Return empty graph instead of error (like VIPs)
+            fig = go.Figure()
+            fig.update_layout(
+                title=f'🔧 {name} - Maker Stats ({world})',
+                xaxis_title='Update Time',
+                yaxis=dict(
+                    title=dict(text='Delta EXP', font=dict(color='#C21500')),
+                    tickfont=dict(color='#C21500')
+                ),
+                yaxis2=dict(
+                    title=dict(text='Online Time (minutes)', font=dict(color='#3498db')),
+                    tickfont=dict(color='#3498db'),
+                    overlaying='y',
+                    side='right'
+                ),
+                template='plotly_white',
+                height=500,
+                xaxis=dict(tickangle=-45),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                hovermode='x unified'
+            )
+            
+            result = {
+                'success': True,
+                'graph_data': fig.to_json(),
+                'stats': {
+                    'total_exp': 0,
+                    'avg_exp': 0,
+                    'max_exp': 0,
+                    'total_online': 0,
+                    'avg_online': 0,
+                    'updates': 0
+                }
+            }
+            return result
+
+        maker_data = maker_data.sort_values('update_time')
+
+        all_update_times = maker_data['update_time'].tolist()
+        exp_values = maker_data['delta_exp'].tolist()
+        online_values = maker_data['delta_online'].tolist()
+
+        all_zero_positions = []
+        for i in range(len(exp_values)):
+            if exp_values[i] == 0 and online_values[i] == 0:
+                all_zero_positions.append(i)
+
+        zero_groups = []
+        if all_zero_positions:
+            start = all_zero_positions[0]
+            for i in range(1, len(all_zero_positions)):
+                if all_zero_positions[i] != all_zero_positions[i - 1] + 1:
+                    if all_zero_positions[i - 1] - start >= 1:
+                        zero_groups.append((start, all_zero_positions[i - 1]))
+                    start = all_zero_positions[i]
+            if all_zero_positions[-1] - start >= 1:
+                zero_groups.append((start, all_zero_positions[-1]))
+
+        time_labels = []
+        compressed_exp = []
+        compressed_online = []
+        compressed_online_display = []
+        time_diffs = []
+        label_metadata = []
+
+        prev_time = None
+        prev_timestamp = None
+        i = 0
+        while i < len(all_update_times):
+            in_zero_group = False
+            for start, end in zero_groups:
+                if i == start:
+                    if start > 0:
+                        start_time = pd.to_datetime(all_update_times[start - 1])
+                    else:
+                        start_time = pd.to_datetime(all_update_times[start])
+                    end_time = pd.to_datetime(all_update_times[end])
+
+                    start_date = start_time.date()
+                    end_date = end_time.date()
+
+                    if start_date == end_date:
+                        short_label = f"{start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}"
+                        full_label = f"{start_time.strftime('%d/%m/%Y %H:%M')}-{end_time.strftime('%H:%M')}"
+                    else:
+                        short_label = f"{start_time.strftime('%d/%m/%Y %H:%M')}-{end_time.strftime('%d/%m/%Y %H:%M')}"
+                        full_label = short_label
+
+                    label_metadata.append((short_label, full_label, len(time_labels)))
+                    time_labels.append(short_label)
+                    compressed_exp.append(0)
+                    compressed_online.append(0)
+                    compressed_online_display.append("0 / 0 min")
+                    time_diffs.append(0)
+                    prev_time = end_time
+                    prev_timestamp = end_time
+
+                    i = end + 1
+                    in_zero_group = True
+                    break
+
+            if not in_zero_group:
+                time_obj = pd.to_datetime(all_update_times[i])
+                current_date = time_obj.date()
+
+                if prev_timestamp is not None:
+                    time_diff_minutes = int((time_obj - prev_timestamp).total_seconds() / 60)
+                else:
+                    time_diff_minutes = 0
+
+                if prev_time is None:
+                    short_label = time_obj.strftime('%H:%M')
+                    full_label = time_obj.strftime('%d/%m/%Y %H:%M')
+                else:
+                    start_date = prev_time.date()
+                    if start_date == current_date:
+                        short_label = f"{prev_time.strftime('%H:%M')}-{time_obj.strftime('%H:%M')}"
+                        full_label = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%H:%M')}"
+                    else:
+                        short_label = f"{prev_time.strftime('%d/%m/%Y %H:%M')}-{time_obj.strftime('%d/%m/%Y %H:%M')}"
+                        full_label = short_label
+
+                label_metadata.append((short_label, full_label, len(time_labels)))
+                time_labels.append(short_label)
+                compressed_exp.append(exp_values[i])
+
+                online_val = online_values[i]
+                if online_val == 0 and exp_values[i] > 0:
+                    compressed_online.append(None)
+                else:
+                    compressed_online.append(online_val)
+
+                display_label = f"{online_val} / {time_diff_minutes} min"
+                compressed_online_display.append(display_label)
+                time_diffs.append(time_diff_minutes)
+
+                prev_time = time_obj
+                prev_timestamp = time_obj
+                i += 1
+
+        from collections import Counter
+        label_counts = Counter(time_labels)
+        for short_label, full_label, idx in label_metadata:
+            if label_counts[short_label] > 1:
+                time_labels[idx] = full_label
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            x=time_labels,
+            y=compressed_exp,
+            name='EXP Gain',
+            marker_color='#C21500',
+            text=[str(int(exp)) if exp > 0 else '' for exp in compressed_exp],
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>EXP: %{y:,.0f}<extra></extra>',
+            yaxis='y'
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=time_labels,
+            y=compressed_exp,
+            name='EXP Trend',
+            mode='lines',
+            line=dict(color='#C21500', width=2, shape='spline'),
+            showlegend=False,
+            hoverinfo='skip',
+            yaxis='y'
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=time_labels,
+            y=compressed_online,
+            name='Online Time (min)',
+            mode='lines+markers',
+            line=dict(color='#3498db', width=2, shape='spline'),
+            marker=dict(size=8, symbol='circle'),
+            text=compressed_online_display,
+            hovertemplate='<b>%{x}</b><br>%{text}<extra></extra>',
+            connectgaps=True,
+            yaxis='y2'
+        ))
+
+        fig.update_layout(
+            title=f'🔧 {name} - Maker Stats ({world})',
+            xaxis_title='Update Time',
+            yaxis=dict(
+                title=dict(text='Delta EXP', font=dict(color='#C21500')),
+                tickfont=dict(color='#C21500')
+            ),
+            yaxis2=dict(
+                title=dict(text='Online Time (minutes)', font=dict(color='#3498db')),
+                tickfont=dict(color='#3498db'),
+                overlaying='y',
+                side='right'
+            ),
+            template='plotly_white',
+            height=500,
+            xaxis=dict(tickangle=-45),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            hovermode='x unified'
+        )
+
+        result = {
+            'success': True,
+            'graph_data': fig.to_json(),
+            'stats': {
+                'total_exp': int(maker_data['delta_exp'].sum()),
+                'avg_exp': float(maker_data['delta_exp'].mean()),
+                'max_exp': int(maker_data['delta_exp'].max()),
+                'total_online': int(maker_data['delta_online'].sum()),
+                'avg_online': float(maker_data['delta_online'].mean()),
+                'updates': len(maker_data)
+            }
+        }
+        del maker_data, fig, time_labels, compressed_exp, compressed_online, compressed_online_display, time_diffs
+        gc.collect()
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_console(f"Error generating Makers graph: {str(e)}", "ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Scraper thread functions
 def scrape_vip_data(database, world):
     """Scrape VIP player data for a specific world"""
@@ -2210,6 +2683,131 @@ def scrape_vip_data(database, world):
     log_console(f"Scraping {len(world_vips)} VIP players for {world}...", "INFO")
     for vip in world_vips:
         scrape_single_vip(database, vip['name'], vip['world'])
+
+
+def scrape_maker_data(database, world):
+    """Scrape Maker player data for a specific world"""
+    makers = database.get_makers()
+    print(makers)
+    if not makers:
+        return
+    
+    world_makers = [m for m in makers if m['world'].lower() == world.lower()]
+    if not world_makers:
+        return
+    
+    log_console(f"Scraping {len(world_makers)} Maker players for {world}...", "INFO")
+    for maker in world_makers:
+        scrape_single_maker(database, maker['name'], maker['world'])
+
+
+def scrape_single_vip(database, name, world):
+    """Scrape a single VIP player and update their data"""
+    try:
+        result = scrape_player_data(name)
+        if result['success'] and result['tables']:
+            today_exp = 0
+            today_online = 0
+            
+            for table in result['tables']:
+                columns = table['columns']
+                data = table['data']
+                
+                if 'Raw XP no dia' in columns and data:
+                    idx = columns.index('Raw XP no dia')
+                    raw_value = data[0][idx] if len(data[0]) > idx else "0"
+                    today_exp = int(raw_value.replace(',', '').replace('.', ''))
+                
+                if 'Online time' in columns and data:
+                    idx = columns.index('Online time')
+                    online_time_str = data[0][idx] if len(data[0]) > idx else "0:00"
+                    today_online = parse_online_time_to_minutes(online_time_str)
+            
+            vipsdata = database.get_vipsdata()
+            existing_vip = vipsdata[(vipsdata['name'] == name) & (vipsdata['world'] == world)]
+            
+            if not existing_vip.empty:
+                old_exp = existing_vip['today_exp'].values[0]
+                old_online = existing_vip['today_online'].values[0]
+                delta_exp = today_exp - old_exp
+                delta_online = today_online - old_online
+                
+                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                today_date = now.strftime("%Y-%m-%d")
+                
+                if delta_exp != 0:
+                    database.add_vip_delta(name, world, today_date, delta_exp, delta_online, now)
+                    database.update_vipdata(name, world, today_exp, today_online)
+                    log_console(f"VIP {name} ({world}): {today_exp} exp, {today_online} min online", "INFO")
+            else:
+                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                today_date = now.strftime("%Y-%m-%d")
+                database.add_vip_delta(name, world, today_date, 0, 0, now)
+                database.update_vipdata(name, world, today_exp, today_online)
+                log_console(f"VIP delta: {name} ({world}) +0 exp, +0 online (initial baseline)", "INFO")
+            
+            return True
+        else:
+            log_console(f"Failed to scrape VIP {name} ({world})", "WARNING")
+            return False
+    except Exception as e:
+        log_console(f"Error scraping VIP {name} ({world}): {str(e)}", "ERROR")
+        return False
+
+
+def scrape_single_maker(database, name, world):
+    """Scrape a single Maker player and update their data"""
+    try:
+        print(f"Scraping Maker: {name} ({world})")
+        result = scrape_player_data(name)
+        if result['success'] and result['tables']:
+            today_exp = 0
+            today_online = 0
+            
+            for table in result['tables']:
+                columns = table['columns']
+                data = table['data']
+                
+                if 'Raw XP no dia' in columns and data:
+                    idx = columns.index('Raw XP no dia')
+                    raw_value = data[0][idx] if len(data[0]) > idx else "0"
+                    today_exp = int(raw_value.replace(',', '').replace('.', ''))
+                
+                if 'Online time' in columns and data:
+                    idx = columns.index('Online time')
+                    online_time_str = data[0][idx] if len(data[0]) > idx else "0:00"
+                    today_online = parse_online_time_to_minutes(online_time_str)
+            
+            makersdata = database.get_makersdata()
+            existing_maker = makersdata[(makersdata['name'] == name) & (makersdata['world'] == world)]
+            
+            if not existing_maker.empty:
+                old_exp = existing_maker['today_exp'].values[0]
+                old_online = existing_maker['today_online'].values[0]
+                delta_exp = today_exp - old_exp
+                delta_online = today_online - old_online
+                
+                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                today_date = now.strftime("%Y-%m-%d")
+                
+                if delta_online != 0:  # For makers, focus on online time
+                    database.add_maker_delta(name, world, today_date, delta_exp, delta_online, now)
+                    database.update_makerdata(name, world, today_exp, today_online)
+                    log_console(f"Maker {name} ({world}): {today_exp} exp, {today_online} min online", "INFO")
+            else:
+                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                today_date = now.strftime("%Y-%m-%d")
+                database.add_maker_delta(name, world, today_date, 0, 0, now)
+                database.update_makerdata(name, world, today_exp, today_online)
+                log_console(f"Maker delta: {name} ({world}) +0 exp, +0 online (initial baseline)", "INFO")
+            
+            return True
+        else:
+            log_console(f"Failed to scrape Maker {name} ({world})", "WARNING")
+            return False
+    except Exception as e:
+        log_console(f"Error scraping Maker {name} ({world}): {str(e)}", "ERROR")
+        return False
 
 
 def loop_get_rankings(database, debug=False):
@@ -2260,6 +2858,7 @@ def loop_get_rankings(database, debug=False):
             database.save_status_data(json_data)
             
             worlds_to_scrape = []
+            print("Scraping config:", scraping_config)
             for config_item in scraping_config:
                 world = config_item['world']
                 
@@ -2290,13 +2889,13 @@ def loop_get_rankings(database, debug=False):
                             'update_time': current_update
                         })
                         log_console(f"New update for {world}: {last_updates.get(world, 'na')} -> {current_update}", "INFO")
-            
+            print(f"Worlds to scrape: {[w['config']['world'] for w in worlds_to_scrape]}")
             if not worlds_to_scrape:
                 if debug:
                     log_console("No new updates found for any world, sleeping 60s", "DEBUG")
                 with scraper_lock:
                     scraper_state = "sleeping"
-                time.sleep(60)
+                time.sleep(180)
             else:
                 with scraper_lock:
                     scraper_state = "scraping"
@@ -2328,6 +2927,9 @@ def loop_get_rankings(database, debug=False):
 
                     log_console("Scraping VIP data...", "INFO")
                     scrape_vip_data(database, world)
+                    
+                    log_console(f"Scraping Maker data... for world {world}", "INFO")
+                    scrape_maker_data(database, world)
                     
                     if world_players:
                         combined_df = pd.concat(world_players, ignore_index=True)

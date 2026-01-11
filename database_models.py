@@ -96,6 +96,53 @@ class VIPDelta(Base):
     )
 
 
+class Maker(Base):
+    """Maker players list."""
+    __tablename__ = 'makers'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    world = Column(String, nullable=False)
+    
+    __table_args__ = (
+        UniqueConstraint('name', 'world', name='uix_maker_name_world'),
+        Index('ix_maker_name', 'name'),
+    )
+
+
+class MakerData(Base):
+    """Maker player daily data."""
+    __tablename__ = 'maker_data'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    world = Column(String, nullable=False)
+    today_exp = Column(Integer, nullable=False, default=0)
+    today_online = Column(Float, nullable=False, default=0.0)
+    
+    __table_args__ = (
+        UniqueConstraint('name', 'world', name='uix_makerdata_name_world'),
+    )
+
+
+class MakerDelta(Base):
+    """Maker player delta tracking."""
+    __tablename__ = 'maker_deltas'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    world = Column(String, nullable=False)
+    date = Column(String, nullable=False)  # Date string
+    delta_exp = Column(Integer, nullable=False)
+    delta_online = Column(Float, nullable=False)
+    update_time = Column(DateTime, nullable=False)
+    
+    __table_args__ = (
+        Index('ix_makerdelta_name', 'name'),
+        Index('ix_makerdelta_time', 'update_time'),
+    )
+
+
 class StatusData(Base):
     """System status data storage."""
     __tablename__ = 'status_data'

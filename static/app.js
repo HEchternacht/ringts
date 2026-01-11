@@ -29,6 +29,7 @@ async function initializeApp() {
     await loadDateRange();
     await loadTopPlayers();
     await loadRecentUpdates();
+    await loadMakersDashboard(); // Load makers cards
     setupEventListeners();
     connectConsoleStream();
     await loadDeltas(); // Initial load
@@ -706,6 +707,118 @@ function renderRecentUpdates(updates) {
     });
     
     container.innerHTML = html;
+}
+
+// Load makers dashboard cards
+async function loadMakersDashboard() {
+    const container = document.getElementById('makersDashboardCards');
+    
+    if (!container) {
+        console.warn('Makers dashboard container not found');
+        return;
+    }
+    
+    // Show loading
+    container.innerHTML = `
+        <div class="makers-loading">
+            <div class="loading-spinner"></div>
+            <p>Loading makers...</p>
+        </div>
+    `;
+    
+    try {
+        const response = await fetch('/api/makers/list');
+        const data = await response.json();
+        
+        if (data.makers && data.makers.length > 0) {
+            container.innerHTML = '';
+            
+            for (const maker of data.makers) {
+                const card = await createMakerCard(maker);
+                container.appendChild(card);
+            }
+        } else {
+            container.innerHTML = '<p style="grid-column: 1 / -1; text-align: center; color: #6c757d; font-style: italic; padding: 40px;">No makers configured</p>';
+        }
+    } catch (error) {
+        console.error('Failed to load makers dashboard:', error);
+        container.innerHTML = '<p style="grid-column: 1 / -1; text-align: center; color: #dc3545; padding: 40px;">Failed to load makers</p>';
+    }
+}
+
+// Create a maker card element
+async function createMakerCard(maker) {
+    const card = document.createElement('div');
+    card.className = 'makers-card';
+    card.onclick = () => window.location.href = '/makers';
+    
+    // Get maker data for stats
+    let makerData = null;
+    try {
+        const response = await fetch(`/api/makers/graph`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: maker.name, world: maker.world })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+                makerData = data.stats;
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load maker stats:', error);
+    }
+    
+    // Get latest online status from deltas
+    let latestDelta = null;
+    try {
+        const response = await fetch(`/api/makers/deltas?name=${encodeURIComponent(maker.name)}&world=${maker.world}&limit=1`);
+        if (response.ok) {
+            const data = await response.json();
+            if (data.deltas && data.deltas.length > 0) {
+                latestDelta = data.deltas[0];
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load maker deltas:', error);
+    }
+    
+    const isOnline = latestDelta && latestDelta.delta_online > 0;
+    const onlineTime = latestDelta ? formatOnlineTime(latestDelta.delta_online) : '0h 0m';
+    
+    card.innerHTML = `
+        <div class="makers-card-header">
+            <div class="makers-card-name">🔧 ${maker.name}</div>
+            <div class="makers-card-world">${maker.world}</div>
+        </div>
+        <div class="makers-card-status">
+            <div class="makers-status-indicator ${isOnline ? 'online' : 'offline'}"></div>
+            <div class="makers-status-text">${isOnline ? 'Online' : 'Offline'}</div>
+        </div>
+        <div class="makers-card-stats">
+            <div class="makers-stat">
+                <div class="makers-stat-label">Total EXP</div>
+                <div class="makers-stat-value">${makerData ? formatNumber(makerData.total_exp) : '0'}</div>
+            </div>
+            <div class="makers-stat">
+                <div class="makers-stat-label">Online Time</div>
+                <div class="makers-stat-value online-time">${onlineTime}</div>
+            </div>
+        </div>
+    `;
+    
+    return card;
+}
+
+// Format online time from minutes
+function formatOnlineTime(minutes) {
+    if (!minutes || minutes === 0) return '0h 0m';
+    
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}h ${mins}m`;
 }
 
 // Clear all selections

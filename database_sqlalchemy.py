@@ -11,7 +11,7 @@ import os
 import pytz
 from database_models import (
     DatabaseManager, Player, Delta, VIP, VIPData, VIPDelta, 
-    StatusData, ScrapingConfig
+    Maker, MakerData, MakerDelta, StatusData, ScrapingConfig
 )
 from sqlalchemy import desc, and_, func
 from sqlalchemy.exc import IntegrityError
@@ -45,6 +45,9 @@ class SQLAlchemyDatabase:
         
         # Initialize configurations
         self._initialize_scraping_config()
+        
+        # Load makers from CSV
+        self.load_makers_from_csv()
         
         # Check if daily reset is needed
         self._check_and_perform_daily_reset()
@@ -203,12 +206,14 @@ class SQLAlchemyDatabase:
     
     def get_scraping_config(self):
         """Get scraping configuration."""
+        return [{'world': 'Auroria', 'guilds': ['Ascended Auroria']},{"world":"Spectrum","guilds":["Ascended Spectrum"]}]
+
         session = self._get_session()
         try:
             config = session.query(ScrapingConfig).first()
             if config:
                 return config.config
-            return [{'world': 'Auroria', 'guilds': ['Ascended Auroria']}]
+            return [{'world': 'Auroria', 'guilds': ['Ascended Auroria']},{"world":"Spectrum","guilds":["Ascended Spectrum"]}]
         finally:
             session.close()
     
@@ -345,6 +350,135 @@ class SQLAlchemyDatabase:
             session.add(vip_delta)
             session.commit()
             print(f"VIP delta: {name} ({world}) +{delta_exp} exp, +{delta_online} online")
+        finally:
+            session.close()
+    
+    def get_makers(self) -> List[Dict]:
+        """Get all Makers."""
+        session = self._get_session()
+        try:
+            makers = session.query(Maker).all()
+            return [{'name': m.name, 'world': m.world} for m in makers]
+        finally:
+            session.close()
+    
+    def get_main_makers(self) -> List[Dict]:
+        """Get all main makers from ref_main_maker.csv."""
+        csv_path = os.path.join(self.folder, 'ref_main_maker.csv')
+        if not os.path.exists(csv_path):
+            print(f"Warning: {csv_path} not found")
+            return []
+        
+        try:
+            df = pd.read_csv(csv_path)
+            # Return the full relationship data
+            return df.to_dict('records')
+        except Exception as e:
+            print(f"Error reading main makers CSV: {e}")
+            return []
+    
+    def get_makersdata(self) -> pd.DataFrame:
+        """Get Maker data."""
+        session = self._get_session()
+        try:
+            maker_data = session.query(MakerData).all()
+            if not maker_data:
+                return pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
+            
+            data = [{
+                'name': m.name,
+                'world': m.world,
+                'today_exp': m.today_exp,
+                'today_online': m.today_online
+            } for m in maker_data]
+            
+            return pd.DataFrame(data)
+        finally:
+            session.close()
+    
+    def get_deltamaker(self) -> pd.DataFrame:
+        """Get Maker deltas."""
+        session = self._get_session()
+        try:
+            maker_deltas = session.query(MakerDelta).order_by(MakerDelta.update_time).all()
+            if not maker_deltas:
+                return pd.DataFrame(columns=['name', 'world', 'date', 'delta_exp', 'delta_online', 'update_time'])
+            
+            data = [{
+                'name': m.name,
+                'world': m.world,
+                'date': m.date,
+                'delta_exp': m.delta_exp,
+                'delta_online': m.delta_online,
+                'update_time': m.update_time
+            } for m in maker_deltas]
+            
+            return pd.DataFrame(data)
+        finally:
+            session.close()
+    
+    def update_makerdata(self, name: str, world: str, today_exp: int, today_online: float):
+        """Update Maker data."""
+        session = self._get_session()
+        try:
+            maker_data = session.query(MakerData).filter_by(name=name, world=world).first()
+            if maker_data:
+                maker_data.today_exp = today_exp
+                maker_data.today_online = today_online
+            else:
+                maker_data = MakerData(
+                    name=name,
+                    world=world,
+                    today_exp=today_exp,
+                    today_online=today_online
+                )
+                session.add(maker_data)
+            session.commit()
+        finally:
+            session.close()
+    
+    def add_maker_delta(self, name: str, world: str, date: str, delta_exp: int, 
+                        delta_online: float, update_time: datetime):
+        """Add Maker delta."""
+        session = self._get_session()
+        try:
+            maker_delta = MakerDelta(
+                name=name,
+                world=world,
+                date=date,
+                delta_exp=delta_exp,
+                delta_online=delta_online,
+                update_time=update_time
+            )
+            session.add(maker_delta)
+            session.commit()
+            print(f"Maker delta: {name} ({world}) +{delta_exp} exp, +{delta_online} online")
+        finally:
+            session.close()
+    
+    def load_makers_from_csv(self):
+        """Load makers from ref_main_maker.csv."""
+        csv_path = os.path.join(self.folder, 'ref_main_maker.csv')
+        if not os.path.exists(csv_path):
+            print(f"Warning: {csv_path} not found, skipping maker loading")
+            return
+        
+        session = self._get_session()
+        try:
+            df = pd.read_csv(csv_path)
+            for _, row in df.iterrows():
+                maker_name = row['maker']
+                maker_world = row['maker_world']
+                # Check if already exists
+                existing = session.query(Maker).filter_by(name=maker_name, world=maker_world).first()
+                if not existing:
+                    maker = Maker(name=maker_name, world=maker_world)
+                    session.add(maker)
+            session.commit()
+            print(f"Loaded makers from {csv_path}")
+        except Exception as e:
+            session.rollback()
+            print(f"Error loading makers from CSV: {e}")
         finally:
             session.close()
     
@@ -493,3 +627,118 @@ class SQLAlchemyDatabase:
                 raise
             finally:
                 session.close()
+    
+    def cleanup_corrupted_delta_records(self):
+        """Clean up corrupted delta records where numeric fields contain bytes data."""
+        session = self._get_session()
+        try:
+            # Check VIP deltas for corruption
+            vip_deltas = session.query(VIPDelta).all()
+            corrupted_vip_count = 0
+            
+            for vip_delta in vip_deltas:
+                needs_update = False
+                
+                # Check if delta_exp is bytes
+                if isinstance(vip_delta.delta_exp, bytes):
+                    try:
+                        # Try to interpret as little-endian integer
+                        if len(vip_delta.delta_exp) >= 4:
+                            int_value = int.from_bytes(vip_delta.delta_exp[:4], byteorder='little', signed=True)
+                            vip_delta.delta_exp = int_value
+                            needs_update = True
+                            print(f"Fixed VIP delta_exp for {vip_delta.name} ({vip_delta.world}): bytes -> {int_value}")
+                        else:
+                            vip_delta.delta_exp = 0
+                            needs_update = True
+                            print(f"Set VIP delta_exp to 0 for {vip_delta.name} ({vip_delta.world}): corrupted bytes")
+                    except (ValueError, OverflowError):
+                        vip_delta.delta_exp = 0
+                        needs_update = True
+                        print(f"Set VIP delta_exp to 0 for {vip_delta.name} ({vip_delta.world}): unconvertible bytes")
+                    corrupted_vip_count += 1
+                
+                # Check if delta_online is bytes
+                if isinstance(vip_delta.delta_online, bytes):
+                    try:
+                        # Try to interpret as little-endian float (stored as int)
+                        if len(vip_delta.delta_online) >= 4:
+                            int_value = int.from_bytes(vip_delta.delta_online[:4], byteorder='little', signed=True)
+                            vip_delta.delta_online = float(int_value)
+                            needs_update = True
+                            print(f"Fixed VIP delta_online for {vip_delta.name} ({vip_delta.world}): bytes -> {float(int_value)}")
+                        else:
+                            vip_delta.delta_online = 0.0
+                            needs_update = True
+                            print(f"Set VIP delta_online to 0 for {vip_delta.name} ({vip_delta.world}): corrupted bytes")
+                    except (ValueError, OverflowError):
+                        vip_delta.delta_online = 0.0
+                        needs_update = True
+                        print(f"Set VIP delta_online to 0 for {vip_delta.name} ({vip_delta.world}): unconvertible bytes")
+                    corrupted_vip_count += 1
+            
+            if corrupted_vip_count > 0:
+                session.commit()
+                print(f"Fixed {corrupted_vip_count} corrupted VIP delta records")
+            
+            # Check Maker deltas for corruption
+            maker_deltas = session.query(MakerDelta).all()
+            corrupted_maker_count = 0
+            
+            for maker_delta in maker_deltas:
+                needs_update = False
+                
+                # Check if delta_exp is bytes
+                if isinstance(maker_delta.delta_exp, bytes):
+                    try:
+                        # Try to interpret as little-endian integer
+                        if len(maker_delta.delta_exp) >= 4:
+                            int_value = int.from_bytes(maker_delta.delta_exp[:4], byteorder='little', signed=True)
+                            maker_delta.delta_exp = int_value
+                            needs_update = True
+                            print(f"Fixed Maker delta_exp for {maker_delta.name} ({maker_delta.world}): bytes -> {int_value}")
+                        else:
+                            maker_delta.delta_exp = 0
+                            needs_update = True
+                            print(f"Set Maker delta_exp to 0 for {maker_delta.name} ({maker_delta.world}): corrupted bytes")
+                    except (ValueError, OverflowError):
+                        maker_delta.delta_exp = 0
+                        needs_update = True
+                        print(f"Set Maker delta_exp to 0 for {maker_delta.name} ({maker_delta.world}): unconvertible bytes")
+                    corrupted_maker_count += 1
+                
+                # Check if delta_online is bytes
+                if isinstance(maker_delta.delta_online, bytes):
+                    try:
+                        # Try to interpret as little-endian float (stored as int)
+                        if len(maker_delta.delta_online) >= 4:
+                            int_value = int.from_bytes(maker_delta.delta_online[:4], byteorder='little', signed=True)
+                            maker_delta.delta_online = float(int_value)
+                            needs_update = True
+                            print(f"Fixed Maker delta_online for {maker_delta.name} ({maker_delta.world}): bytes -> {float(int_value)}")
+                        else:
+                            maker_delta.delta_online = 0.0
+                            needs_update = True
+                            print(f"Set Maker delta_online to 0 for {maker_delta.name} ({maker_delta.world}): corrupted bytes")
+                    except (ValueError, OverflowError):
+                        maker_delta.delta_online = 0.0
+                        needs_update = True
+                        print(f"Set Maker delta_online to 0 for {maker_delta.name} ({maker_delta.world}): unconvertible bytes")
+                    corrupted_maker_count += 1
+            
+            if corrupted_maker_count > 0:
+                session.commit()
+                print(f"Fixed {corrupted_maker_count} corrupted Maker delta records")
+            
+            total_fixed = corrupted_vip_count + corrupted_maker_count
+            if total_fixed > 0:
+                print(f"Database cleanup completed. Fixed {total_fixed} corrupted records total.")
+            else:
+                print("Database cleanup completed. No corrupted records found.")
+                
+        except Exception as e:
+            session.rollback()
+            print(f"Error during database cleanup: {str(e)}")
+            raise
+        finally:
+            session.close()
