@@ -1634,6 +1634,48 @@ def upload_exps(password: str = Form(...), file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/upload/makers")
+def upload_makers(password: str = Form(...), file: UploadFile = File(...)):
+    """Upload ref_main_maker.csv file"""
+    try:
+        if password != UPLOAD_PASSWORD:
+            raise HTTPException(status_code=401, detail='Invalid password')
+
+        if not file.filename.endswith('.csv'):
+            raise HTTPException(status_code=400, detail='Only CSV files are allowed')
+
+        contents = file.read()
+        df = pd.read_csv(StringIO(contents.decode('utf-8')),
+                         dtype={'main': str, 'main_world': str, 'maker': str, 'maker_world': str})
+
+        required_columns = ['main', 'main_world', 'maker', 'maker_world']
+        if not all(col in df.columns for col in required_columns):
+            raise HTTPException(status_code=400, detail=f'CSV must have columns: {required_columns}')
+
+        # Save to ref_main_maker.csv
+        makers_file = os.path.join(db.folder, 'ref_main_maker.csv')
+        
+        import shutil
+        if os.path.exists(makers_file):
+            backup_file = makers_file.replace('.csv', '_backup.csv')
+            shutil.copy(makers_file, backup_file)
+            log_console(f"Created backup: {backup_file}", "INFO")
+
+        records_count = len(df)
+        df.to_csv(makers_file, index=False)
+        log_console(f"Uploaded ref_main_maker.csv with {records_count} records", "SUCCESS")
+
+        del df
+        gc.collect()
+        return {'success': True, 'records': records_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_console(f"Error uploading ref_main_maker.csv: {str(e)}", "ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/player-graph/{player_name}")
 def get_player_graph(player_name: str = PathParam(...), datetime1: Optional[str] = Query(None),
                            datetime2: Optional[str] = Query(None)):

@@ -175,6 +175,12 @@ async function applyFilters() {
     document.getElementById('statsTable').innerHTML = '';
     document.getElementById('comparisonTable').innerHTML = '';
     
+    // Clear live feed deltas when filters are applied
+    deltasByDate = new Map();
+    deltaIds = new Set();
+    renderDeltaFeed(); // Clear the UI immediately
+    await loadDeltas(); // Reload with new filters
+    
     showSuccess(`Filters applied: ${currentFilters.world} - ${currentFilters.guild}`);
 }
 

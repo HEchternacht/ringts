@@ -206,7 +206,7 @@ class SQLAlchemyDatabase:
     
     def get_scraping_config(self):
         """Get scraping configuration."""
-        return [{'world': 'Auroria', 'guilds': ['Ascended Auroria']},{"world":"Spectrum","guilds":["Ascended Spectrum"]}]
+        return [{'world': 'Auroria', 'guilds': ['Ascended Auroria','ShellPatrocina']},{"world":"Spectrum","guilds":["Ascended Spectrum"]}]
 
         session = self._get_session()
         try:

@@ -103,6 +103,29 @@
             </div>
         </div>
 
+        <!-- Upload Section -->
+        <section class="section-card">
+            <h2>Upload Makers Data</h2>
+            <p class="section-description">Upload a CSV file to update the main makers relationships. The file must have columns: main, main_world, maker, maker_world</p>
+            
+            <div class="upload-container">
+                <input type="password" id="makersPassword" placeholder="Upload password" class="password-input" />
+                <input type="file" id="uploadMakers" accept=".csv" style="display: none;" />
+                <button class="btn-secondary" onclick="document.getElementById('uploadMakers').click()">⬆️ Upload ref_main_maker.csv</button>
+                <div id="uploadMakersStatus" class="status-message"></div>
+            </div>
+            
+            <div class="upload-info">
+                <h4>CSV Format Requirements:</h4>
+                <ul>
+                    <li>Columns: <code>main,main_world,maker,maker_world</code></li>
+                    <li>Example: <code>Lucs Enn,Auroria,rtc defenderr,spectrum</code></li>
+                    <li>Password is required to upload files</li>
+                    <li>Current data will be backed up before replacement</li>
+                </ul>
+            </div>
+        </section>
+
         </div>
         <!-- End main-content -->
     </div>
@@ -120,6 +143,9 @@
             loadMakersList();
             loadMainMakersList();
             connectMakersStream();
+            
+            // Upload functionality
+            document.getElementById('uploadMakers').addEventListener('change', handleMakersUpload);
             
             // No add/remove functionality for makers
         });
@@ -188,6 +214,60 @@
                 console.error('Error loading main makers list:', error);
                 document.getElementById('mainMakersTableBody').innerHTML = '<tr><td colspan="5" style="text-align: center; color: #dc3545;">Error loading main makers list.</td></tr>';
             }
+        }
+
+        // Handle Makers CSV upload
+        async function handleMakersUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const statusDiv = document.getElementById('uploadMakersStatus');
+            const passwordInput = document.getElementById('makersPassword');
+            const password = passwordInput.value.trim();
+            
+            if (!password) {
+                statusDiv.textContent = '❌ Error: Password is required';
+                statusDiv.className = 'status-message error';
+                event.target.value = '';
+                return;
+            }
+            
+            statusDiv.textContent = 'Uploading...';
+            statusDiv.className = 'status-message info';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('password', password);
+            
+            try {
+                const response = await fetch('/api/upload/makers', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    statusDiv.textContent = `✅ Successfully uploaded ${data.records} records. Backup created.`;
+                    statusDiv.className = 'status-message success';
+                    passwordInput.value = ''; // Clear password
+                    
+                    // Reload the main makers table
+                    loadMainMakersList();
+                } else if (response.status === 401) {
+                    statusDiv.textContent = '❌ Error: Invalid password';
+                    statusDiv.className = 'status-message error';
+                } else {
+                    statusDiv.textContent = `❌ Error: ${data.detail || 'Unknown error'}`;
+                    statusDiv.className = 'status-message error';
+                }
+            } catch (error) {
+                statusDiv.textContent = `❌ Error: ${error.message}`;
+                statusDiv.className = 'status-message error';
+            }
+            
+            // Clear the file input
+            event.target.value = '';
         }
 
         // Close modal function
@@ -740,6 +820,39 @@
         .modal.active,
         .modal[style*="display: flex"] {
             display: flex;
+        }
+
+        /* Upload section styles */
+        .upload-info {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+        }
+
+        .upload-info h4 {
+            margin: 0 0 10px 0;
+            color: #495057;
+            font-size: 16px;
+        }
+
+        .upload-info ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .upload-info li {
+            margin-bottom: 5px;
+            color: #6c757d;
+        }
+
+        .upload-info code {
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
         }
     </style>
 </body>
