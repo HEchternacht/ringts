@@ -156,31 +156,39 @@ function updateGuildFilter(guildsByWorld) {
 
 // Apply filters
 async function applyFilters() {
+    
+    console.log('Applying filters...');
     const worldFilter = document.getElementById('worldFilter');
     const guildFilter = document.getElementById('guildFilter');
     
+    console.log("Got filters:", worldFilter.value, guildFilter.value);
     currentFilters.world = worldFilter.value;
     currentFilters.guild = guildFilter.value;
     
     // Reload all data with new filters
     await loadPlayers();
+    console.log('Players loaded after filter change');
     await loadTopPlayers();
-    await loadRecentUpdates();
-    await loadDeltas();
+    console.log('Top players loaded after filter change');
+    await loadRecentUpdates(currentFilters.world, currentFilters.guild);
+    console.log('Recent updates loaded after filter change');
     
     // Clear current visualization
     selectedPlayers = [];
     renderSelectedPlayers();
+
     document.getElementById('graphDiv').innerHTML = '<p>Select players and click "Generate Visualization" to view data</p>';
     document.getElementById('statsTable').innerHTML = '';
-    document.getElementById('comparisonTable').innerHTML = '';
+    //document.getElementById('comparisonTable').innerHTML = '';
     
-    // Clear live feed deltas when filters are applied
+
+    console.log('Cleared visualization after filter change');
     deltasByDate = new Map();
     deltaIds = new Set();
     renderDeltaFeed(); // Clear the UI immediately
-    await loadDeltas(); // Reload with new filters
-    
+    console.log('Cleared delta feed after filter change');
+    await loadDeltas(currentFilters.world, currentFilters.guild); // Reload with new filters
+    console.log('Deltas loaded after filter change');
     showSuccess(`Filters applied: ${currentFilters.world} - ${currentFilters.guild}`);
 }
 
@@ -680,9 +688,16 @@ function renderTopPlayers(players) {
 }
 
 // Load recent updates
-async function loadRecentUpdates() {
+async function loadRecentUpdates(world = null, guild = null) {
     try {
-        const response = await fetch('/api/recent-updates?limit=10');
+        let url = '/api/recent-updates?limit=10';
+        if (world) {
+            url += `&world=${encodeURIComponent(world)}`;
+        }
+        if (guild) {
+            url += `&guild=${encodeURIComponent(guild)}`;
+        }
+        const response = await fetch(url);
         const updates = await response.json();
         renderRecentUpdates(updates);
     } catch (error) {
@@ -2023,16 +2038,25 @@ window.showPlayerGraph = showPlayerGraph;
 window.closePlayerModal = closePlayerModal;
 
 // Delta Polling
-async function loadDeltas() {
+
+async function ClearDeltas() {
+    deltaIds.clear();
+    deltasByDate.clear();
+    renderDeltaFeed();
+}
+
+
+async function loadDeltas(world = null, guild = null) {
     try {
         const params = new URLSearchParams({
             limit: 100,
-            world: currentFilters.world,
-            guild: currentFilters.guild
+            world: world || currentFilters.world,
+            guild: guild || currentFilters.guild
         });
         const response = await fetch(`/api/delta?${params}`);
         const data = await response.json();
         
+        console.log('Loaded deltas:', data);
         if (data.deltas && data.deltas.length > 0) {
             // Process deltas
             data.deltas.forEach(delta => {

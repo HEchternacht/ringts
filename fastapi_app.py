@@ -1346,9 +1346,16 @@ def get_top_players(limit: int = Query(10), datetime1: Optional[str] = Query(Non
 
 
 @app.get("/api/recent-updates")
-def get_recent_updates(limit: int = Query(20)):
+def get_recent_updates(limit: int = Query(20),world: Optional[str] = Query(None),
+                              guild: Optional[str] = Query(None)):
     """Get recent EXP updates"""
     deltas = db.get_deltas()
+
+    if world:
+        deltas = deltas[deltas['world'] == world]
+    if guild:
+        deltas = deltas[deltas['guild'] == guild]
+
     recent = deltas.sort_values('update time', ascending=False).head(limit)
     result = recent.to_dict('records')
 
@@ -1786,6 +1793,7 @@ def get_deltas(limit: int = Query(100), world: Optional[str] = Query(None),
                      guild: Optional[str] = Query(None)):
     """Get recent delta updates"""
     try:
+        log_console(f"Fetching deltas with limit={limit}, world={world}, guild={guild}", "DEBUG")
         all_deltas = db.get_deltas()
 
         if all_deltas.empty:
