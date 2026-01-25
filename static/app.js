@@ -747,24 +747,8 @@ async function loadMakersDashboard() {
         </div>
     `;
     
-    try {
-        const response = await fetch('/api/makers/list');
-        const data = await response.json();
-        
-        if (data.makers && data.makers.length > 0) {
-            container.innerHTML = '';
-            
-            for (const maker of data.makers) {
-                const card = await createMakerCard(maker);
-                container.appendChild(card);
-            }
-        } else {
-            container.innerHTML = '<p style="grid-column: 1 / -1; text-align: center; color: #6c757d; font-style: italic; padding: 40px;">No makers configured</p>';
-        }
-    } catch (error) {
-        console.error('Failed to load makers dashboard:', error);
-        container.innerHTML = '<p style="grid-column: 1 / -1; text-align: center; color: #dc3545; padding: 40px;">Failed to load makers</p>';
-    }
+    // Disabled makers fetch for reduced scraping usage
+    container.innerHTML = '<p style="grid-column: 1 / -1; text-align: center; color: #6c757d; font-style: italic; padding: 40px;">No makers configured (fetch disabled)</p>';
 }
 
 // Create a maker card element
@@ -774,37 +758,12 @@ async function createMakerCard(maker) {
     card.onclick = () => window.location.href = '/makers';
     
     // Get maker data for stats
+    // Disabled makers graph fetch for reduced scraping usage
     let makerData = null;
-    try {
-        const response = await fetch(`/api/makers/graph`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: maker.name, world: maker.world })
-        });
-        
-        if (response.ok) {
-            const data = await response.json();
-            if (data.success) {
-                makerData = data.stats;
-            }
-        }
-    } catch (error) {
-        console.error('Failed to load maker stats:', error);
-    }
     
     // Get latest online status from deltas
+    // Disabled makers deltas fetch for reduced scraping usage
     let latestDelta = null;
-    try {
-        const response = await fetch(`/api/makers/deltas?name=${encodeURIComponent(maker.name)}&world=${maker.world}&limit=1`);
-        if (response.ok) {
-            const data = await response.json();
-            if (data.deltas && data.deltas.length > 0) {
-                latestDelta = data.deltas[0];
-            }
-        }
-    } catch (error) {
-        console.error('Failed to load maker deltas:', error);
-    }
     
     const isOnline = latestDelta && latestDelta.delta_online > 0;
     const onlineTime = latestDelta ? formatOnlineTime(latestDelta.delta_online) : '0h 0m';
@@ -1255,30 +1214,10 @@ async function loadRankingsTable() {
         }
     } catch (error) {
         showError('Failed to load rankings: ' + error.message);
-    } finally {
-        hideLoading();
-    }
-}
-
-function renderRankingsTable(data) {
-    const container = document.getElementById('rankingsTableContent');
-    
-    if (data.length === 0) {
-        container.innerHTML = '<div class="rankings-placeholder"><p>No data available for selected date range</p></div>';
-        return;
-    }
-    
-    let html = '<div class="rankings-data-table"><table>';
-    html += '<thead><tr>';
-    html += '<th>#</th>';
-    html += '<th>Player</th>';
-    html += '<th>Total EXP</th>';
-    html += '<th>Updates</th>';
-    html += '<th>Average EXP</th>';
-    html += '<th>Max EXP</th>';
-    html += '<th>Min EXP</th>';
-    html += '</tr></thead><tbody>';
-    
+    // Disabled player details fetch for reduced scraping usage
+    contentEl.innerHTML = '<p class="no-data">Player details fetch disabled</p>';
+    contentEl.style.display = 'block';
+    loadingEl.style.display = 'none';
     data.forEach((player, index) => {
         const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '';
         html += '<tr>';
@@ -2380,4 +2319,4 @@ async function handleExpsUpload(event) {
     
     // Clear the file input
     event.target.value = '';
-}
+}}

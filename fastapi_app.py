@@ -53,7 +53,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
@@ -106,27 +106,30 @@ pp = ['http://103.155.62.141:8081',
       'http://101.47.16.15:7890',
       'http://154.3.236.202:3128',
       'http://194.26.141.202:3128',
-      'http://205.164.192.115:999']
-
+      'http://205.164.192.115:999',
+    "http://47.237.113.119:4145",
+    "http://47.237.113.119:16010",
+    "http://47.237.113.119:9080",
+    "http://47.237.113.119:5060",
+    "http://47.237.113.119:8081",
+    "http://47.237.113.119:6379",
+    "http://47.250.177.202:8080",
+    "http://8.220.204.92:9091",
+    "http://8.220.204.92:1200",]
 
 def get_multiple(url: str, proxies: list):
 
     #ignore proxies
 
-    API_KEY = "019bf3fc2b607ee086711c7bbe605634"  # Replace with your actual API key
-
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Accept": "application/json"
-    }
-
-    url = "https://api.getfreeproxy.com/v1/proxies?protocol=http&page=1"
-
-    response = httpx.get(url, headers=headers)
-    proxies=[p['proxyUrl'] for p in response.json()]
-    proxies
-
-
+    token = "eaf8c660553844149b8c97e93d99f6ac5cfffa29d2b"
+    superParam = "False"
+    render="true"
+    urlx = "http://api.scrape.do/?token={}&url={}&render={}".format(token, url, render)
+    tic_req = time.time()
+    response = requests.request("GET", urlx)
+    print(response)
+    toc_req = time.time()
+    return response
 
     tic = time.time()
     success_flag = threading.Event()
@@ -914,6 +917,28 @@ def parse_online_time_to_minutes(time_str):
             total_minutes += minutes
     
     return total_minutes
+
+
+
+def parse_oudated_to_cur_time(outdated_str):
+    #expect 1h 28min, 20m 1d, 3d and combinations
+    total_minutes = 0
+    parts = outdated_str.split()
+    for part in parts:
+        if 'h' in part:
+            hours = int(part.replace('h', '').strip())
+            total_minutes += hours * 60
+        elif 'm' in part:
+            minutes = int(part.replace('m', '').strip())
+            total_minutes += minutes
+        elif 'd' in part:
+            days = int(part.replace('d', '').strip())
+            total_minutes += days * 1440
+
+    #get today datetime-timezoneoffset
+    now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+    result_time = now - timedelta(minutes=total_minutes)
+    return result_time
 
 
 def scrape_single_vip(database, name, world):
@@ -2922,7 +2947,6 @@ def loop_get_rankings(database, debug=False):
                 scraper_state = "checking"
             
             all_status = get_last_status_updates()
-            
             if not all_status:
                 log_console("Failed to get status data, retrying...", "WARNING")
                 with scraper_lock:
@@ -2930,6 +2954,7 @@ def loop_get_rankings(database, debug=False):
                 time.sleep(60)
                 continue
             
+            print("ALL STATUS:", all_status)
             json_data = {
                 "fetch_time": datetime.now().isoformat(),
                 "worlds": {}
@@ -2942,37 +2967,39 @@ def loop_get_rankings(database, debug=False):
                         if 'last update' in record and pd.notna(record['last update']):
                             dt = pd.to_datetime(record['last update']) - timedelta(hours=TIMEZONE_OFFSET_HOURS)
                             record['last update'] = dt.isoformat()
+
                         else:
                             record['last update'] = None
+
+                        #try to infer using time_outdated if last update is missing
+                        if (record['last update'] is None or record['last update'] == 'NaT') and 'time_outdated' in record and pd.notna(record['time_outdated']):
+                            record['last update'] = parse_oudated_to_cur_time(record['time_outdated']).isoformat()
+                            #modify origin dataframe
+                            df.loc[df['rotina'] == record['rotina'], 'last update'] = pd.to_datetime(record['last update'])
                     json_data["worlds"][world_name] = world_data
             
+            print(all_status)
             database.save_status_data(json_data)
             
             worlds_to_scrape = []
             print("Scraping config:", scraping_config)
             for config_item in scraping_config:
                 world = config_item['world']
-                
                 if world not in all_status:
                     log_console(f"World '{world}' not found in status data, skipping", "WARNING")
                     continue
-                
                 df = all_status[world]
                 if 'rotina' not in df.columns or 'last update' not in df.columns:
                     log_console(f"Invalid data structure for world '{world}', skipping", "WARNING")
                     continue
-                
                 daily_raw = df[df['rotina'] == 'Daily Raw Ranking']
                 if daily_raw.empty:
                     log_console(f"No 'Daily Raw Ranking' data for world '{world}', skipping", "WARNING")
                     continue
-                
                 current_update = pd.to_datetime(daily_raw['last update'].values[0])
-                
                 if pd.isna(current_update):
                     log_console(f"Invalid update time (NaT) for world '{world}', skipping", "WARNING")
                     continue
-                
                 if world not in last_updates or last_updates[world] != current_update:
                     if current_update not in ignore_updates:
                         worlds_to_scrape.append({
@@ -2986,26 +3013,22 @@ def loop_get_rankings(database, debug=False):
                     log_console("No new updates found for any world, sleeping 60s", "DEBUG")
                 with scraper_lock:
                     scraper_state = "sleeping"
-                time.sleep(180)
+                time.sleep(300)  # Sleep 5 minutes
             else:
                 with scraper_lock:
                     scraper_state = "scraping"
-                
                 worlds_updated = 0
                 for item in worlds_to_scrape:
                     config_item = item['config']
                     update_time = item['update_time']
                     world = config_item['world']
                     guilds = config_item['guilds']
-                    
                     log_console(f"Processing world: {world} at {update_time}", "INFO")
-                    
                     world_players = []
                     for guild in guilds:
                         try:
                             log_console(f"Scraping {world} - {guild}", "INFO")
                             r = get_ranking(world=world, guildname=guild)
-                            
                             if r is None or len(r) < 2:
                                 log_console(f"No data for {world} - {guild}", "WARNING")
                             else:
@@ -3015,37 +3038,29 @@ def loop_get_rankings(database, debug=False):
                                 log_console(f"Got {len(rankparsed)} players from {world} - {guild}", "SUCCESS")
                         except Exception as e:
                             log_console(f"Error scraping {world} - {guild}: {str(e)}", "ERROR")
-
-                    log_console("Scraping VIP data...", "INFO")
-                    scrape_vip_data(database, world)
-                    
-                    log_console(f"Scraping Maker data... for world {world}", "INFO")
-                    scrape_maker_data(database, world)
-                    
+                    # Disabled VIPs, makers, and tables fetch for reduced scraping usage
+                    # log_console("Scraping VIP data...", "INFO")
+                    # scrape_vip_data(database, world)
+                    # log_console(f"Scraping Maker data... for world {world}", "INFO")
+                    # scrape_maker_data(database, world)
                     if world_players:
                         combined_df = pd.concat(world_players, ignore_index=True)
                         combined_df = combined_df.drop_duplicates(subset=['name'], keep='first')
-                        
                         database.update(combined_df, update_time)
                         database.save()
                         log_console(f"Updated {len(combined_df)} players for {world} at {update_time}", "SUCCESS")
-                        
                         del combined_df
                         clean_memory()
-                        
                         last_updates[world] = update_time
                         if update_time not in ignore_updates:
                             ignore_updates.append(update_time)
-                        
                         worlds_updated += 1
                     else:
                         log_console(f"No player data collected for {world}", "WARNING")
-                
                 if worlds_updated > 0:
                     log_console(f"Successfully updated {worlds_updated} world(s)", "SUCCESS")
                 else:
                     log_console("No worlds were updated", "WARNING")
-                
                 with scraper_lock:
                     scraper_state = "idle"
         except Exception as e:
