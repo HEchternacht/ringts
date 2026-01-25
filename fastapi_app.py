@@ -65,7 +65,7 @@ FORCE_PROXY = True if os.environ.get('FORCE_PROXY', None) == 'true' else False
 class GraphRequest(BaseModel):
     names: List[str]
     datetime1: Optional[str] = None
-    datetime2: Optional[str] = None
+    datetime2: Optional[str] = None 
 
 class StatsRequest(BaseModel):
     names: List[str]
@@ -684,13 +684,15 @@ def parse_datetime(date_str):
 
 def scrape_player_data(player_name):
     """Complete pipeline to scrape player data from rubinothings.com.br"""
+
+    
     result = {
         'name': player_name,
         'tables': [],
         'response_status': None,
         'success': False
     }
-    
+    return result
     url = "https://rubinothings.com.br/player"
     params = {"name": player_name}
     
