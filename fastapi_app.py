@@ -110,6 +110,24 @@ pp = ['http://103.155.62.141:8081',
 
 
 def get_multiple(url: str, proxies: list):
+
+    #ignore proxies
+
+    API_KEY = "019bf3fc2b607ee086711c7bbe605634"  # Replace with your actual API key
+
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Accept": "application/json"
+    }
+
+    url = "https://api.getfreeproxy.com/v1/proxies?protocol=http&page=1"
+
+    response = httpx.get(url, headers=headers)
+    proxies=[p['proxyUrl'] for p in response.json()]
+    proxies
+
+
+
     tic = time.time()
     success_flag = threading.Event()
     pool = None
@@ -193,7 +211,9 @@ scraper_thread = None
 
 class Database:
     """Database abstraction layer for storing player EXP data."""
-
+    _cache_ttl = 10
+    _cache = {}
+    _cache_times = {}
     def __init__(self, folder=None):
         if folder is None:
             folder = DATA_FOLDER
@@ -214,6 +234,14 @@ class Database:
 
         self._initialize_scraping_config()
         self._initialize_vip_files()
+    def _cached_read(self, key, read_func):
+        now = time.time()
+        if key in self._cache and (now - self._cache_times.get(key, 0)) < self._cache_ttl:
+            return self._cache[key].copy()
+        data = read_func()
+        self._cache[key] = data
+        self._cache_times[key] = now
+        return data.copy()
 
     def _read_exps(self):
         try:
@@ -301,11 +329,12 @@ class Database:
 
     def get_exps(self):
         with self.lock:
-            return self._read_exps()
+            return self._cached_read('exps', self._read_exps)
 
     def get_deltas(self):
         with self.lock:
-            return self._read_deltas()
+            return self._cached_read('deltas', self._read_deltas)
+
 
     def get_status_data(self):
         with self.lock:
@@ -370,18 +399,16 @@ class Database:
         return True
 
     def get_vipsdata(self):
-        try:
-            return pd.read_csv(self.vipsdata_file)
-        except FileNotFoundError:
-            return pd.DataFrame(columns=['name', 'world', 'today_exp', 'today_online'])
+        return self._cached_read('vipsdata', lambda: pd.read_csv(self.vipsdata_file) if os.path.exists(self.vipsdata_file) else pd.DataFrame(columns=['name','world','today_exp','today_online']))
 
     def get_deltavip(self):
-        try:
+        def _read():
+            if not os.path.exists(self.deltavip_file):
+                return pd.DataFrame(columns=['name','world','date','delta_exp','delta_online','update_time'])
             df = pd.read_csv(self.deltavip_file, parse_dates=['update_time'])
             return df
-        except FileNotFoundError:
-            return pd.DataFrame(columns=['name', 'world', 'date', 'delta_exp', 'delta_online', 'update_time'])
-
+        return self._cached_read('deltavip', _read)
+    
     def update_vipdata(self, name, world, today_exp, today_online):
         vipsdata = self.get_vipsdata()
         mask = (vipsdata['name'] == name) & (vipsdata['world'] == world)
@@ -392,7 +419,14 @@ class Database:
             new_row = pd.DataFrame([{'name': name, 'world': world, 'today_exp': today_exp, 'today_online': today_online}])
             vipsdata = pd.concat([vipsdata, new_row], ignore_index=True)
         vipsdata.to_csv(self.vipsdata_file, index=False)
-
+        self._cache.pop('exps', None)
+        self._cache.pop('deltas', None)
+        self._cache.pop('vipsdata', None)
+        self._cache.pop('deltavip', None)
+        self._cache_times.pop('exps', None)
+        self._cache_times.pop('deltas', None)
+        self._cache_times.pop('vipsdata', None)
+        self._cache_times.pop('deltavip', None)
     def add_vip_delta(self, name, world, date, delta_exp, delta_online, update_time):
         deltavip = self.get_deltavip()
         new_row = pd.DataFrame([{
@@ -406,7 +440,14 @@ class Database:
         deltavip = pd.concat([deltavip, new_row], ignore_index=True)
         deltavip.to_csv(self.deltavip_file, index=False)
         log_console(f"VIP delta: {name} ({world}) +{delta_exp} exp, +{delta_online} online", "INFO")
-
+        self._cache.pop('exps', None)
+        self._cache.pop('deltas', None)
+        self._cache.pop('vipsdata', None)
+        self._cache.pop('deltavip', None)
+        self._cache_times.pop('exps', None)
+        self._cache_times.pop('deltas', None)
+        self._cache_times.pop('vipsdata', None)
+        self._cache_times.pop('deltavip', None)
     def save_status_data(self, data):
         """Save status data with lock"""
         with self.lock:
