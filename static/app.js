@@ -2154,7 +2154,7 @@ function renderDeltaFeed() {
         const deltas = deltasByDate.get(dateTimeKey);
         
         html += `<div class="delta-date-group">`;
-        html += `<div class="delta-date-header">${dateTimeKey}</div>`;
+        html += `<div class="delta-date-header">${dateTimeKey} <span style=\"font-size:0.9em;color:#888;\">(± 5min error)</span></div>`;
         
         for (const delta of deltas) {
             const currentTime = new Date(delta.update_time).toLocaleTimeString('en-US', {
@@ -2178,7 +2178,7 @@ function renderDeltaFeed() {
                     <div class="delta-exp-value">
                         <span class="plus">+</span>${formatNumber(delta.deltaexp)} EXP
                     </div>
-                    <div class="delta-time">${timeRange}</div>
+                    <div class="delta-time">${timeRange} <span style=\"font-size:0.9em;color:#888;\">(± 5min)</span></div>
                 </div>
             `;
         }

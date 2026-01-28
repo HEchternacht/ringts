@@ -26,6 +26,7 @@ dependencies = [
     "requests>=2.32.5",
     "requests-html>=0.10.0",
     "rnet==3.0.0rc20",
+    "selenium>=4.40.0",
     "sqlalchemy>=2.0.45",
     "uvicorn>=0.40.0",
     "waitress>=3.0.2",

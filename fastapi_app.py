@@ -28,6 +28,42 @@ import psutil
 import asyncio
 from pydantic import BaseModel
 from database_sqlalchemy import SQLAlchemyDatabase
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+
+
+def selenium_alternative(url):
+
+    import time
+
+    chrome_options = Options()
+
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+
+    service = Service()  # Update with your chromedriver path
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+
+    driver.get(url)
+
+    try:
+        # Wait for the page to load specific element
+        element = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        page_source = driver.page_source
+    finally:
+        driver.quit()
+
+    return page_source  
+
+
 # Configure aggressive garbage collection for memory efficiency
 gc.set_threshold(700, 10, 5)
 gc.enable()
@@ -204,7 +240,7 @@ def get_multiple(url: str, proxies: list):
         toc_req = time.time()
         return response
     except Exception as e:  
-        return None
+        return selenium_alternative(url)
   
 
 # Console log queue for real-time display
