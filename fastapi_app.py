@@ -53,7 +53,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
@@ -121,18 +121,10 @@ def get_multiple(url: str, proxies: list):
 
     #ignore proxies
 
-    token = "eaf8c660553844149b8c97e93d99f6ac5cfffa29d2b"
-    superParam = "False"
-    render="true"
-    urlx = "http://api.scrape.do/?token={}&url={}&render={}".format(token, url, render)
-    tic_req = time.time()
-    response = requests.request("GET", urlx)
-    print(response)
-    toc_req = time.time()
-    return response
+    
 
     tic = time.time()
-    success_flag = threading.Event()
+    success_flag = threading.Event()    
     pool = None
 
     def get_resp(url, proxy):
@@ -141,7 +133,7 @@ def get_multiple(url: str, proxies: list):
             return None
 
         try:
-            with httpx.Client(proxy=proxy) as client:
+            with httpx.Client(proxy=proxy,verify=False) as client:
                 tic_req = time.time()
                 print(f"Sending request via proxy: {proxy}")
 
@@ -199,8 +191,21 @@ def get_multiple(url: str, proxies: list):
             pool.close()
             del pool
             gc.collect()
-    return None
 
+    #if no success
+    try:
+        token = "eaf8c660553844149b8c97e93d99f6ac5cfffa29d2b"
+        superParam = "False"
+        render="true"
+        urlx = "http://api.scrape.do/?token={}&url={}&render={}".format(token, url, render)
+        tic_req = time.time()
+        response = requests.request("GET", urlx)
+        print(response)
+        toc_req = time.time()
+        return response
+    except Exception as e:  
+        return None
+  
 
 # Console log queue for real-time display
 console_queue = queue.Queue()
@@ -920,28 +925,41 @@ def parse_online_time_to_minutes(time_str):
     
     return total_minutes
 
-
-
+import re
 def parse_oudated_to_cur_time(outdated_str):
     #expect 1h 28min, 20m 1d, 3d and combinations
     total_minutes = 0
     parts = outdated_str.split()
-    for part in parts:
-        if 'h' in part:
-            hours = int(part.replace('h', '').strip())
-            total_minutes += hours * 60
-        elif 'm' in part:
-            minutes = int(part.replace('m', '').strip())
-            total_minutes += minutes
-        elif 'd' in part:
-            days = int(part.replace('d', '').strip())
-            total_minutes += days * 1440
+    try:
+        #uf regex like nn min, where nn is number <nn 'min'>
+        if re.match(r'^\d+\s*min$', outdated_str):
 
-    #get today datetime-timezoneoffset
-    now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
-    result_time = now - timedelta(minutes=total_minutes)
-    return result_time
+            minutes=parts[parts.index("min")-1]
+            total_minutes += int(minutes)
+            now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+            result_time = now - timedelta(minutes=total_minutes)
+            return result_time
 
+
+        for part in parts:
+            if 'h' in part:
+                hours = int(part.replace('h', '').strip())
+                total_minutes += hours * 60
+            elif 'm' in part:
+                minutes = int(part.replace('min', '').strip())
+                total_minutes += minutes
+            elif 'd' in part:
+                days = int(part.replace('d', '').strip())
+                total_minutes += days * 1440
+
+
+        #get today datetime-timezoneoffset
+        now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+        result_time = now - timedelta(minutes=total_minutes)
+        return result_time
+    except Exception as e:
+        log_console(f"Error parsing outdated time '{outdated_str}': {str(e)}", "ERROR")
+        return None
 
 def scrape_single_vip(database, name, world):
     """Scrape a single VIP player and update their data"""
@@ -3065,6 +3083,7 @@ def loop_get_rankings(database, debug=False):
                     log_console("No worlds were updated", "WARNING")
                 with scraper_lock:
                     scraper_state = "idle"
+            time.sleep(120)
         except Exception as e:
             log_console(f"Error in scraper: {str(e)}", "ERROR")
             traceback.print_exc()
