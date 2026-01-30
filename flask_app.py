@@ -24,6 +24,40 @@ import threading
 import psutil
 from waitress import serve
 
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+
+
+def selenium_alternative(url):
+
+    import time
+
+    chrome_options = Options()
+
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+
+    service = Service()  # Update with your chromedriver path
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+
+    driver.get(url)
+
+    try:
+        # Wait for the page to load specific element
+        element = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        page_source = driver.page_source
+    finally:
+        driver.quit()
+
+    return page_source  
+
 # Configure aggressive garbage collection for memory efficiency
 gc.set_threshold(700, 10, 5)  # More aggressive than default (700, 10, 10)
 gc.enable()
@@ -37,7 +71,7 @@ UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
 #DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', '/var/data')
+DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
 TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
@@ -99,104 +133,117 @@ def handle_exception(e):
         'message': error_msg,
         'status': 500
     }), 500
-pp=['http://103.155.62.141:8081',
- 'http://45.177.16.137:999',
- 'http://190.242.157.215:8080',
- 'http://187.102.219.64:999',
- 'http://41.128.72.147:1981',
- 'http://62.113.119.14:8080',
- 'http://59.6.25.118:3128',
- 'http://101.47.16.15:7890',
- 'http://154.3.236.202:3128',
- 'http://194.26.141.202:3128',
- 'http://205.164.192.115:999']
 
-
+pp = ['http://103.155.62.141:8081',
+      'http://45.177.16.137:999',
+      'http://190.242.157.215:8080',
+      'http://187.102.219.64:999',
+      'http://41.128.72.147:1981',
+      'http://62.113.119.14:8080',
+      'http://59.6.25.118:3128',
+      'http://101.47.16.15:7890',
+      'http://154.3.236.202:3128',
+      'http://194.26.141.202:3128',
+      'http://205.164.192.115:999',
+    "http://47.237.113.119:4145",
+    "http://47.237.113.119:16010",
+    #"http://47.237.113.119:9080",
+    "http://47.237.113.119:5060",
+    "http://47.237.113.119:8081",
+    "http://47.237.113.119:6379",
+    #"http://47.250.177.202:8080",
+    #"http://8.220.204.92:9091",
+    #"http://8.220.204.92:1200",
+]
 
 def get_multiple(url: str, proxies: list):
+
+    #ignore proxies
+
+    
+
     tic = time.time()
-    
-    # Local success flag - not global
-    success_flag = threading.Event()
-    
+    success_flag = threading.Event()    
+    pool = None
+
     def get_resp(url, proxy):
-        # Check if another thread already succeeded
         if success_flag.is_set():
             print(f"Skipping {proxy} - already got success")
             return None
-            
+
         try:
-            with httpx.Client(proxy=proxy) as client:
-                tic_req=time.time()
+            with httpx.Client(proxy=proxy,verify=False) as client:
+                tic_req = time.time()
                 print(f"Sending request via proxy: {proxy}")
-                
-                # Check again before making request
+
                 if success_flag.is_set():
                     return None
-                    
+
                 response = client.get(url, timeout=30)
-                
-                # Check if we should even process this
+
                 if success_flag.is_set():
                     return None
-                    
-                toc_req=time.time()
-                print(f"Response time via proxy {proxy}: {toc_req-tic_req:.2f}s")
+
+                toc_req = time.time()
+                print(f"Response time via proxy {proxy}: {toc_req - tic_req:.2f}s")
                 print(f"Received response via proxy: {proxy} with status code {response.status_code}")
-                
-                # Return both status and content so we can check it
+
                 return {
-                    "object":response,
+                    "object": response,
                     'status_code': response.status_code,
                     'proxy': proxy,
-                    'time': toc_req-tic_req
+                    'time': toc_req - tic_req
                 }
         except Exception as e:
             if not success_flag.is_set():
                 print(f"Error with {proxy}: {str(e)}")
             return None
-    
+
     pool = ThreadPool(max_workers=40)
-    
+
     try:
-        # Submit all tasks
         futures = [pool.schedule(get_resp, args=(url, proxy)) for proxy in proxies]
-        
-        # Use as_completed to get results as they finish (not in order!)
+
         for future in as_completed(futures):
-            # If we already found success, break immediately
             if success_flag.is_set():
                 break
-                
+
             try:
                 result = future.result(timeout=0.01)
-                
-                # Check if it's a successful response
+
                 if result and isinstance(result, dict) and result.get('status_code') == 200:
                     toc = time.time()
-                    print(f"\n✓ SUCCESS! Total time: {toc-tic:.2f}s")
+                    print(f"\n✓ SUCCESS! Total time: {toc - tic:.2f}s")
                     print(f"✓ Successful response via proxy: {result['proxy']}")
-                    
-                    # Signal all other threads to stop
+
                     success_flag.set()
-                    # Return IMMEDIATELY - don't wait for anything
-                    del pool
                     gc.collect()
                     return result['object']
-                    
+
             except TimeoutError:
                 pass
             except Exception as e:
                 pass
-                
+
     finally:
-        # Close pool without waiting
-        pool.close()
-        del pool
-        clean_memory()
-    return None
+        if pool is not None:
+            pool.close()
+            del pool
+            gc.collect()
 
-
+    #if no success
+    try:
+        token = "eaf8c660553844149b8c97e93d99f6ac5cfffa29d2b"
+        superParam = "False"
+        render="true"
+        urlx = "http://api.scrape.do/?token={}&url={}&render={}".format(token, url, render)
+        tic_req = time.time()
+        response = requests.request("GET", urlx)
+        print(response)
+        toc_req = time.time()
+        return response
+    except Exception as e:  
+        return selenium_alternative(url)
 
 # Console log queue for real-time display
 console_queue = queue.Queue()
@@ -1306,6 +1353,7 @@ def loop_get_rankings(database, debug=False):
             
             # Check each configured world for updates
             worlds_to_scrape = []
+            print()
             for config_item in scraping_config:
                 world = config_item['world']
                 
@@ -1346,7 +1394,7 @@ def loop_get_rankings(database, debug=False):
                     log_console("No new updates found for any world, sleeping 60s", "DEBUG")
                 with scraper_lock:
                     scraper_state = "sleeping"
-                time.sleep(60)
+                time.sleep(120)
             else:
                 # Process EACH WORLD separately with its own timestamp
                 with scraper_lock:
@@ -1381,8 +1429,10 @@ def loop_get_rankings(database, debug=False):
                         except Exception as e:
                             log_console(f"Error scraping {world} - {guild}: {str(e)}", "ERROR")
 
-                    log_console("Scraping VIP data...", "INFO")
-                    scrape_vip_data(database, world)
+                    log_console("Scraping VIP data.., DEACTIVATED", "INFO")
+
+                    #scrape_vip_data(database, world)
+
                     # Update database for THIS WORLD ONLY with ITS timestamp
                     if world_players:
                         combined_df = pd.concat(world_players, ignore_index=True)
@@ -1417,6 +1467,7 @@ def loop_get_rankings(database, debug=False):
                 
                 with scraper_lock:
                     scraper_state = "idle"
+                time.sleep(120)  # Short pause before next check
         except Exception as e:
             log_console(f"Error in scraper: {str(e)}", "ERROR")
             traceback.print_exc()
@@ -2855,4 +2906,5 @@ def get_vip_graph():
 if __name__ == '__main__':
     # Use Waitress for production-ready deployment
     log_console("Starting Waitress server on 0.0.0.0:5000", "INFO")
-    serve(app, host='0.0.0.0', port=5000, threads=1, channel_timeout=300)
+    #serve(app, host='0.0.0.0', port=5000, threads=1, channel_timeout=300)
+    app.run(host='0.0.0.0', port=5000, debug=False)

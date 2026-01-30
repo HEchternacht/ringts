@@ -149,9 +149,10 @@ pp = ['http://103.155.62.141:8081',
     "http://47.237.113.119:5060",
     "http://47.237.113.119:8081",
     "http://47.237.113.119:6379",
-    "http://47.250.177.202:8080",
-    "http://8.220.204.92:9091",
-    "http://8.220.204.92:1200",]
+    #"http://47.250.177.202:8080",
+    #"http://8.220.204.92:9091",
+    #"http://8.220.204.92:1200",
+]
 
 def get_multiple(url: str, proxies: list):
 
@@ -818,73 +819,78 @@ def get_ranking(world=None, guildname=None):
 
 def get_last_status_updates(world=None):
     """Get status updates to determine correct scraping timestamp"""
-    if world is None:
-        world = DEFAULT_WORLD
-    url = "https://rubinothings.com.br/status"
-    
-    if not FORCE_PROXY:
-        try:
-            response = requests.get(url, timeout=10)
-            if response.status_code != 200:
-                log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+    try:
+        if world is None:
+            world = DEFAULT_WORLD
+        url = "https://rubinothings.com.br/status"
+        
+        if not FORCE_PROXY:
+            try:
+                response = requests.get(url, timeout=10)
+                if response.status_code != 200:
+                    log_console(f"Direct fetch failed with status {response.status_code}, trying proxies...", "WARNING")
+                    response = get_multiple(url, pp)
+            except Exception as e:
+                log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
                 response = get_multiple(url, pp)
-        except Exception as e:
-            log_console(f"Direct fetch failed: {str(e)}, trying proxies...", "WARNING")
+        else:
             response = get_multiple(url, pp)
-    else:
-        response = get_multiple(url, pp)
-    
-    if not response:
-        return None
-    soup = bs4.BeautifulSoup(response.text, 'html.parser')
+        
+        if not response:
+            return None
+        soup = bs4.BeautifulSoup(response.text, 'html.parser')
 
-    r = extract_tables(soup)
-    split_tables = []
+        r = extract_tables(soup)
+        split_tables = []
 
-    for df in r:
-        mask = df.apply(lambda row: all((str(x).strip() == '' or pd.isna(x)) for x in row), axis=1)
-        split_indices = mask[mask].index.tolist()
-        prev = 0
-        for idx in split_indices:
-            part = df.iloc[prev:idx]
+        for df in r:
+            mask = df.apply(lambda row: all((str(x).strip() == '' or pd.isna(x)) for x in row), axis=1)
+            split_indices = mask[mask].index.tolist()
+            prev = 0
+            for idx in split_indices:
+                part = df.iloc[prev:idx]
+                if not part.empty:
+                    split_tables.append(part.reset_index(drop=True))
+                prev = idx + 1
+            part = df.iloc[prev:]
             if not part.empty:
                 split_tables.append(part.reset_index(drop=True))
-            prev = idx + 1
-        part = df.iloc[prev:]
-        if not part.empty:
-            split_tables.append(part.reset_index(drop=True))
 
-    tables_dict = {}
-    for table in split_tables:
-        if not table.empty:
-            table_name = str(table.iloc[0, 0]).strip()
-            if "Status" in table_name:
-                table_name = table_name.split("Status")[0].strip()
-            new_table = table.iloc[1:].reset_index(drop=True)
-            tables_dict[table_name] = new_table
+        tables_dict = {}
+        for table in split_tables:
+            if not table.empty:
+                table_name = str(table.iloc[0, 0]).strip()
+                if "Status" in table_name:
+                    table_name = table_name.split("Status")[0].strip()
+                new_table = table.iloc[1:].reset_index(drop=True)
+                tables_dict[table_name] = new_table
 
-    for key in tables_dict:
-        df = tables_dict[key]
-        if not df.empty:
-            df.iloc[:, 0] = (
-                df.iloc[:, 0]
-                .str.replace("Rotina de coleta", "")
-                .str.replace(r"[^\w\s,.:-]", "", regex=True)
-            )
-            tables_dict[key] = df
-            if df.shape[1] >= 4:
-                df.columns = ["rotina", "last update", "time_outdated", "status"]
+        for key in tables_dict:
+            df = tables_dict[key]
+            if not df.empty:
+                df.iloc[:, 0] = (
+                    df.iloc[:, 0]
+                    .str.replace("Rotina de coleta", "")
+                    .str.replace(r"[^\w\s,.:-]", "", regex=True)
+                )
+                tables_dict[key] = df
+                if df.shape[1] >= 4:
+                    df.columns = ["rotina", "last update", "time_outdated", "status"]
+                    tables_dict[key] = df
+
+        for key in tables_dict:
+            df = tables_dict[key]
+            if 'last update' in df.columns:
+                df['last update'] = df['last update'].apply(parse_datetime)
                 tables_dict[key] = df
 
-    for key in tables_dict:
-        df = tables_dict[key]
-        if 'last update' in df.columns:
-            df['last update'] = df['last update'].apply(parse_datetime)
-            tables_dict[key] = df
-
-    del soup, r, split_tables, response
-    gc.collect()
-    return tables_dict
+        del soup, r, split_tables, response
+        gc.collect()
+        return tables_dict
+    except Exception as e:
+        log_console(f"Error in get_last_status_updates: {str(e)}", "ERROR")
+        log_console(f'Receveid response: {response.text if response else "No response"}', "ERROR")
+        return None
 
 
 def return_last_update(world=None, save_all_data=True, database=None):
