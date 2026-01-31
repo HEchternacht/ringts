@@ -5,6 +5,7 @@ import subprocess
 import psutil
 import requests
 
+PORT=8969
 
 def run_uvicorn_with_monitor():
     """
@@ -14,15 +15,39 @@ def run_uvicorn_with_monitor():
         # Start the server process
         process = subprocess.Popen([
             sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
-            '--host', '0.0.0.0', '--port', '5000', '--log-level', 'info'
+            '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info'
         ])
         print(f"[INIT] Started uvicorn server (PID: {process.pid})")
         try:
             while True:
                 time.sleep(60)
+                health_failed = False
+                # Check /healthz endpoint
                 try:
-                    # Query the FastAPI /memusage endpoint for memory usage
-                    resp = requests.get('http://127.0.0.1:5000/memusage', timeout=10)
+                    health_resp = requests.get(f'http://127.0.0.1:{PORT}/healthz', timeout=10)
+                    if health_resp.status_code != 200:
+                        print(f"[INIT] /healthz returned status {health_resp.status_code}, restarting server...")
+                        health_failed = True
+                    else:
+                        health_data = health_resp.json()
+                        if health_data.get('status') not in ['healthy', 'degraded']:
+                            print(f"[INIT] /healthz unhealthy: {health_data}")
+                            health_failed = True
+                except requests.RequestException as e:
+                    print(f"[INIT] Error querying /healthz: {e}")
+                    health_failed = True
+                except Exception as e:
+                    print(f"[INIT] Unexpected error on /healthz: {e}")
+                    health_failed = True
+
+                if health_failed:
+                    process.terminate()
+                    process.wait(timeout=10)
+                    break
+
+                # Query the FastAPI /memusage endpoint for memory usage
+                try:
+                    resp = requests.get(f'http://127.0.0.1:{PORT}/memusage', timeout=10)
                     if resp.status_code == 200:
                         mem_data = resp.json()
                         mem_mb = mem_data['process']['rss_mb']

@@ -89,8 +89,22 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 UPLOAD_PASSWORD = os.environ.get('UPLOAD_PASSWORD', 'Rollabostx1234')
 DEFAULT_WORLD = os.environ.get('DEFAULT_WORLD', 'Auroria')
 DEFAULT_GUILD = os.environ.get('DEFAULT_GUILD', 'Ascended Auroria')
-DATA_FOLDER = os.environ.get('DATA_FOLDER', 'var/data')
-TIMEZONE_OFFSET_HOURS = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
+
+
+#buikd abspath
+
+
+
+
+
+
+
+
+
+
+
+DATA_FOLDER = os.path.abspath(os.environ.get('DATA_FOLDER', 'var/data'))
+TIMEZONE_OFFSET_HOURS = 0
 DAILY_RESET_HOUR = int(os.environ.get('DAILY_RESET_HOUR', '10'))
 DAILY_RESET_MINUTE = int(os.environ.get('DAILY_RESET_MINUTE', '2'))
 MAX_MEMORY_MB = 350
@@ -638,7 +652,7 @@ class Database:
 
 
 def log_console(message: str, level: str = "INFO"):
-    timestamp = (datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}] [{level}] {message}"
     print(log_entry)
     try:
@@ -715,11 +729,11 @@ def parse_datetime(date_str):
         time_part = re.search(r'(\d{2}:\d{2})', date_str)
         if time_part:
             time_str = time_part.group(1)
-            now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+            now = datetime.now()
             date_time = datetime.strptime(f"{now.date()} {time_str}", "%Y-%m-%d %H:%M")
             return pd.to_datetime(date_time)
         else:
-            yesterday = (datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)) - timedelta(days=1)
+            yesterday = datetime.now() - timedelta(days=1)
             return pd.to_datetime(datetime.strptime(f"{yesterday.date()} 00:00", "%Y-%m-%d %H:%M"))
     return None
 
@@ -978,7 +992,7 @@ def parse_oudated_to_cur_time(outdated_str):
 
             minutes=parts[parts.index("min")-1]
             total_minutes += int(minutes)
-            now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+            now = datetime.now()
             result_time = now - timedelta(minutes=total_minutes)
             return result_time
 
@@ -996,7 +1010,7 @@ def parse_oudated_to_cur_time(outdated_str):
 
 
         #get today datetime-timezoneoffset
-        now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+        now = datetime.now()
         result_time = now - timedelta(minutes=total_minutes)
         return result_time
     except Exception as e:
@@ -1034,7 +1048,7 @@ def scrape_single_vip(database, name, world):
                 delta_exp = today_exp - old_exp
                 delta_online = today_online - old_online
                 
-                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                now = datetime.now()
                 today_date = now.strftime("%Y-%m-%d")
                 
                 if delta_exp != 0:
@@ -1042,7 +1056,7 @@ def scrape_single_vip(database, name, world):
                     database.update_vipdata(name, world, today_exp, today_online)
                     log_console(f"VIP {name} ({world}): {today_exp} exp, {today_online} min online", "INFO")
             else:
-                now = datetime.now() - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                now = datetime.now()
                 today_date = now.strftime("%Y-%m-%d")
                 database.add_vip_delta(name, world, today_date, 0, 0, now)
                 database.update_vipdata(name, world, today_exp, today_online)
@@ -3027,7 +3041,7 @@ def loop_get_rankings(database, debug=False):
                     world_data = df.to_dict('records')
                     for record in world_data:
                         if 'last update' in record and pd.notna(record['last update']):
-                            dt = pd.to_datetime(record['last update']) - timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                            dt = pd.to_datetime(record['last update'])
                             record['last update'] = dt.isoformat()
 
                         else:
@@ -3153,7 +3167,7 @@ def start_scraper_thread(database):
 
 
 # Initialize database and start scraper
-db.load()
+db.load(DATA_FOLDER)
 start_scraper_thread(db)
 
 
