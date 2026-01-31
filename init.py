@@ -12,11 +12,33 @@ def run_uvicorn_with_monitor():
     Run fastapi_app.py with uvicorn and monitor memory usage via /memusage endpoint. Restart if usage > 450MB.
     """
     while True:
-        # Start the server process
-        process = subprocess.Popen([
-            sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
-            '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info'
-        ])
+        # Start the server process in a new terminal on Linux, normal on Windows
+        if sys.platform.startswith('linux'):
+            # Try common terminal emulators
+            terminal_cmds = [
+                ['x-terminal-emulator', '-e'],
+                ['gnome-terminal', '--'],
+                ['konsole', '-e'],
+                ['xterm', '-e']
+            ]
+            uvicorn_cmd = [sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
+                          '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info']
+            for term in terminal_cmds:
+                try:
+                    process = subprocess.Popen(term + uvicorn_cmd)
+                    print(f"[INIT] Started uvicorn server in new terminal (PID: {process.pid})")
+                    break
+                except FileNotFoundError:
+                    continue
+            else:
+                print("[INIT] No supported terminal emulator found. Starting in current process.")
+                process = subprocess.Popen(uvicorn_cmd)
+        else:
+            process = subprocess.Popen([
+                sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
+                '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info'
+            ])
+            print(f"[INIT] Started uvicorn server (PID: {process.pid})")
         print(f"[INIT] Started uvicorn server (PID: {process.pid})")
         try:
             while True:
@@ -42,7 +64,12 @@ def run_uvicorn_with_monitor():
 
                 if health_failed:
                     process.terminate()
-                    process.wait(timeout=10)
+                    try:
+                        process.wait(timeout=10)
+                    except Exception:
+                        pass
+                    if process.poll() is None:
+                        process.kill()
                     break
 
                 # Query the FastAPI /memusage endpoint for memory usage
@@ -55,7 +82,12 @@ def run_uvicorn_with_monitor():
                         if mem_mb > 450:
                             print("[INIT] Memory usage exceeded 450MB, restarting server...")
                             process.terminate()
-                            process.wait(timeout=10)
+                            try:
+                                process.wait(timeout=10)
+                            except Exception:
+                                pass
+                            if process.poll() is None:
+                                process.kill()
                             break
                     else:
                         print(f"[INIT] /memusage endpoint returned status {resp.status_code}")
@@ -70,7 +102,12 @@ def run_uvicorn_with_monitor():
         except Exception as e:
             print(f"[INIT] Monitor error: {e}")
             process.terminate()
-            process.wait(timeout=10)
+            try:
+                process.wait(timeout=10)
+            except Exception:
+                pass
+            if process.poll() is None:
+                process.kill()
         time.sleep(2)  # Short delay before restart
 
 if __name__ == "__main__":

@@ -1306,7 +1306,7 @@ def get_player_stats(names, database, datetime1=None, datetime2=None):
 
 
 # Initialize database
-db = SQLAlchemyDatabase()
+db = SQLAlchemyDatabase(DATA_FOLDER)
 
 # Exception handlers
 @app.exception_handler(400)

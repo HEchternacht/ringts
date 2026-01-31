@@ -32,7 +32,7 @@ class SQLAlchemyDatabase:
         self.reset_done_today = False
         
         # Timezone configuration
-        self.timezone_offset_hours = int(os.environ.get('TIMEZONE_OFFSET_HOURS', '3'))
+        self.timezone_offset_hours = 0
         self.daily_reset_hour = int(os.environ.get('DAILY_RESET_HOUR', '10'))
         self.daily_reset_minute = int(os.environ.get('DAILY_RESET_MINUTE', '5'))
         
@@ -607,6 +607,15 @@ class SQLAlchemyDatabase:
                             log_console(f"New player: {name} with {exp} EXP ({world} - {guild})")
                         except IntegrityError:
                             session.rollback()
+                            # Update existing delta if duplicate
+                            existing_delta = session.query(Delta).filter_by(
+                                name=name, update_time=update_time
+                            ).first()
+                            if existing_delta:
+                                existing_delta.deltaexp = exp
+                                existing_delta.world = world
+                                existing_delta.guild = guild
+                                log_console(f"Updated duplicate for new player {name} at {update_time}", "INFO")
                         
                         delta_queue.put({
                             'name': name,
