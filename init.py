@@ -19,7 +19,7 @@ def run_uvicorn_with_monitor():
             # Try common terminal emulators, keep terminal open after process exits
             uvicorn_cmd_str = f"{sys.executable} -m uvicorn fastapi_app:app --host 0.0.0.0 --port {PORT} --log-level info"
             terminal_cmds = [
-                ['x-terminal-emulator', '-e', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"],
+                ['x-terminal-emulator', '-e', 'bash', '-c', f"{uvicorn_cmd_str}"],
                 ['gnome-terminal', '--', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"],
                 ['konsole', '-e', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"],
                 ['xterm', '-e', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"]
@@ -105,9 +105,7 @@ def run_uvicorn_with_monitor():
                         process.wait(timeout=10)
                     except Exception:
                         pass
-                    if process.poll() is None:
-                        process.kill()
-                    break
+         
                         ###############################################################################################################
 
                 # Query the FastAPI /memusage endpoint for memory usage
@@ -134,9 +132,7 @@ def run_uvicorn_with_monitor():
                 except Exception as e:
                     print(f"[INIT] Unexpected error: {e}")
                 # Also check if process is still alive
-                if process.poll() is not None:
-                    print("[INIT] Server process ended.")
-                    break
+          
         except Exception as e:
             print(f"[INIT] Monitor error: {e}")
             process.terminate()
