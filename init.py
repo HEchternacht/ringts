@@ -5,7 +5,7 @@ import subprocess
 import psutil
 import requests
 
-PORT=8969
+PORT=8939
 
 def run_uvicorn_with_monitor():
     """

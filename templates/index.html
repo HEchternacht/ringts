@@ -49,6 +49,41 @@
                 <button id="applyFilters" class="btn-filter">Apply Filters</button>
             </div>
             
+            <!-- EXP Alarm Configuration -->
+            <div class="alarm-config-panel">
+                <button class="alarm-toggle-btn" id="alarmToggleBtn" onclick="toggleAlarmPanel()">🔔 EXP Alarms</button>
+                <div class="alarm-panel" id="alarmPanel" style="display: none;">
+                    <h3>⚡ Guild EXP Alarm</h3>
+                    <div class="alarm-inputs">
+                        <div class="alarm-field">
+                            <label>Guilds to Monitor:</label>
+                            <select id="alarmGuilds" multiple class="alarm-guild-select">
+                                <!-- Options populated dynamically -->
+                            </select>
+                            <small style="color: rgba(255,255,255,0.8); margin-top: 5px;">Hold Ctrl/Cmd to select multiple</small>
+                        </div>
+                        <div class="alarm-field">
+                            <label>EXP Threshold:</label>
+                            <input type="number" id="alarmThreshold" placeholder="e.g., 100000" value="100000" />
+                        </div>
+                        <div class="alarm-field">
+                            <label>Number of Scrapes to Monitor:</label>
+                            <input type="number" id="alarmScrapeCount" placeholder="e.g., 2" value="2" min="1" max="10" />
+                            <small style="color: rgba(255,255,255,0.8); margin-top: 5px;">Check if player made > threshold EXP in last N scrapes</small>
+                        </div>
+                        <div class="alarm-actions">
+                            <button class="btn-primary" onclick="saveAlarmConfig()">💾 Save Config</button>
+                            <button class="btn-secondary" onclick="testAlarm()">🔊 Test Alarm</button>
+                            <button class="btn-secondary" onclick="clearAlarms()">🗑️ Clear</button>
+                        </div>
+                        <div class="alarm-status" id="alarmStatus">
+                            <span class="alarm-indicator inactive"></span>
+                            <span>Alarm: Inactive</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div class="header-controls">
                 <div class="scraper-status" id="scraperStatus">
                     <span class="status-indicator"></span>
@@ -369,6 +404,24 @@
         </div>
         <!-- End main-content -->
         
+        <!-- EXP Alarm Popup -->
+        <div class="alarm-popup" id="alarmPopup" style="display: none;">
+            <div class="alarm-popup-content">
+                <div class="alarm-popup-header">
+                    <h2>🚨 EXP ALERT!</h2>
+                    <button class="alarm-close" onclick="dismissAlarm()">&times;</button>
+                </div>
+                <div class="alarm-popup-body">
+                    <div class="alarm-icon">⚡</div>
+                    <div class="alarm-message" id="alarmMessage">Guild has exceeded EXP threshold!</div>
+                    <div class="alarm-details" id="alarmDetails"></div>
+                </div>
+                <div class="alarm-popup-footer">
+                    <button class="btn-primary" onclick="dismissAlarm()">Dismiss</button>
+                    <button class="btn-secondary" onclick="snoozeAlarm()">Snooze 5 min</button>
+                </div>
+            </div>
+        </div>
 
     </div>
 

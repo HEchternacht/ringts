@@ -9,6 +9,18 @@ let deltasByDate = new Map();
 let deltaIds = new Set(); // Track unique deltas to prevent duplicates
 let currentFilters = { world: 'Auroria', guild: 'Ascended Auroria' }; // Global filters
 
+// Alarm state
+let alarmConfig = {
+    guilds: [],
+    threshold: 100000,
+    scrapeCount: 2, // number of scrapes to check
+    enabled: false,
+    snoozedUntil: null
+};
+let guildExpTracking = new Map(); // Track exp per guild (stores array of recent deltas)
+let alarmAudio = null;
+let availableGuilds = []; // Available guilds from config
+
 // Carousel state
 let currentComparisonIndex = 0;
 let currentPlayerDetailsIndex = 0;
@@ -36,7 +48,9 @@ async function initializeApp() {
     setInterval(loadDeltas, 60000); // Poll every 1 minute
     checkScraperStatus();
     setInterval(checkScraperStatus, 60000); // Check every 1 minute
-}
+    loadAlarmConfig(); // Load saved alarm configuration
+        initializeAlarmAudio(); // Initialize alarm sound
+    }
 
 // Setup event listeners
 function setupEventListeners() {
@@ -130,6 +144,9 @@ async function loadFiltersConfig() {
         });
         
         window.guildsByWorld = guildsByWorld; // Store for later use
+        
+        // Populate alarm guild selector
+        populateAlarmGuildSelector(guildsByWorld);
     } catch (error) {
         console.error('Failed to load filters config:', error);
     }
@@ -151,6 +168,37 @@ function updateGuildFilter(guildsByWorld) {
             option.selected = true;
         }
         guildFilter.appendChild(option);
+    });
+    
+    // Update alarm guild selector as well
+    populateAlarmGuildSelector(guildsByWorld);
+}
+
+// Populate alarm guild selector with all guilds from all worlds
+function populateAlarmGuildSelector(guildsByWorld) {
+    const alarmGuildSelect = document.getElementById('alarmGuilds');
+    if (!alarmGuildSelect) return;
+    
+    // Get all unique guilds from all worlds
+    const allGuilds = new Set();
+    Object.values(guildsByWorld).forEach(guilds => {
+        guilds.forEach(guild => allGuilds.add(guild));
+    });
+    
+    // Store for later use
+    availableGuilds = Array.from(allGuilds).sort();
+    
+    // Populate selector
+    alarmGuildSelect.innerHTML = '';
+    availableGuilds.forEach(guild => {
+        const option = document.createElement('option');
+        option.value = guild;
+        option.textContent = guild;
+        // Check if this guild was previously selected
+        if (alarmConfig.guilds.includes(guild)) {
+            option.selected = true;
+        }
+        alarmGuildSelect.appendChild(option);
     });
 }
 
@@ -2080,6 +2128,9 @@ function addDeltaToFeed(delta) {
     // Mark this delta as seen
     deltaIds.add(deltaId);
     
+    // Check alarm conditions
+    checkGuildAlarms(delta);
+    
     const feedContent = document.getElementById('liveFeedContent');
     const deltaDate = new Date(delta.update_time);
     const prevDate = new Date(delta.prev_update_time);
@@ -2380,4 +2431,324 @@ async function handleExpsUpload(event) {
     
     // Clear the file input
     event.target.value = '';
+}
+// ============================================
+// ALARM SYSTEM FUNCTIONS
+// ============================================
+
+// Initialize alarm audio
+function initializeAlarmAudio() {
+    // Create an audio context for the alarm sound
+    alarmAudio = {
+        context: null,
+        play: function() {
+            try {
+                if (!this.context) {
+                    this.context = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                
+                const oscillator = this.context.createOscillator();
+                const gainNode = this.context.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(this.context.destination);
+                
+                oscillator.frequency.value = 800;
+                oscillator.type = 'sine';
+                
+                gainNode.gain.setValueAtTime(0.3, this.context.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, this.context.currentTime + 0.5);
+                
+                oscillator.start(this.context.currentTime);
+                oscillator.stop(this.context.currentTime + 0.5);
+                
+                // Play multiple beeps
+                setTimeout(() => {
+                    const osc2 = this.context.createOscillator();
+                    const gain2 = this.context.createGain();
+                    osc2.connect(gain2);
+                    gain2.connect(this.context.destination);
+                    osc2.frequency.value = 1000;
+                    osc2.type = 'sine';
+                    gain2.gain.setValueAtTime(0.3, this.context.currentTime);
+                    gain2.gain.exponentialRampToValueAtTime(0.01, this.context.currentTime + 0.5);
+                    osc2.start(this.context.currentTime);
+                    osc2.stop(this.context.currentTime + 0.5);
+                }, 200);
+                
+                setTimeout(() => {
+                    const osc3 = this.context.createOscillator();
+                    const gain3 = this.context.createGain();
+                    osc3.connect(gain3);
+                    gain3.connect(this.context.destination);
+                    osc3.frequency.value = 800;
+                    osc3.type = 'sine';
+                    gain3.gain.setValueAtTime(0.3, this.context.currentTime);
+                    gain3.gain.exponentialRampToValueAtTime(0.01, this.context.currentTime + 0.5);
+                    osc3.start(this.context.currentTime);
+                    osc3.stop(this.context.currentTime + 0.5);
+                }, 400);
+            } catch (error) {
+                console.error('Error playing alarm sound:', error);
+            }
+        }
+    };
+}
+
+// Toggle alarm panel visibility
+function toggleAlarmPanel() {
+    const panel = document.getElementById('alarmPanel');
+    const btn = document.getElementById('alarmToggleBtn');
+    
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        btn.classList.add('active');
+    } else {
+        panel.style.display = 'none';
+        btn.classList.remove('active');
+    }
+}
+
+// Load alarm configuration from localStorage
+function loadAlarmConfig() {
+    try {
+        const saved = localStorage.getItem('expAlarmConfig');
+        if (saved) {
+            const config = JSON.parse(saved);
+            alarmConfig.guilds = config.guilds || [];
+            alarmConfig.threshold = config.threshold || 100000;
+            alarmConfig.scrapeCount = config.scrapeCount || 2;
+            alarmConfig.enabled = config.enabled || false;
+            
+            // Update UI - select options in multi-select
+            const alarmGuildSelect = document.getElementById('alarmGuilds');
+            if (alarmGuildSelect) {
+                Array.from(alarmGuildSelect.options).forEach(option => {
+                    option.selected = alarmConfig.guilds.includes(option.value);
+                });
+            }
+            document.getElementById('alarmThreshold').value = alarmConfig.threshold;
+            document.getElementById('alarmScrapeCount').value = alarmConfig.scrapeCount;
+            
+            updateAlarmStatus();
+        }
+    } catch (error) {
+        console.error('Error loading alarm config:', error);
+    }
+}
+
+// Save alarm configuration
+function saveAlarmConfig() {
+    const alarmGuildSelect = document.getElementById('alarmGuilds');
+    const threshold = parseInt(document.getElementById('alarmThreshold').value) || 100000;
+    const scrapeCount = parseInt(document.getElementById('alarmScrapeCount').value) || 2;
+    
+    // Get selected guilds from multi-select
+    const selectedGuilds = Array.from(alarmGuildSelect.selectedOptions).map(opt => opt.value);
+    
+    if (selectedGuilds.length === 0) {
+        showNotification('⚠️ Please select at least one guild', 'warning');
+        return;
+    }
+    
+    alarmConfig.guilds = selectedGuilds;
+    alarmConfig.threshold = threshold;
+    alarmConfig.scrapeCount = scrapeCount;
+    alarmConfig.enabled = true;
+    alarmConfig.snoozedUntil = null;
+    
+    // Save to localStorage
+    localStorage.setItem('expAlarmConfig', JSON.stringify(alarmConfig));
+    
+    updateAlarmStatus();
+    showNotification('✅ Alarm configuration saved!', 'success');
+}
+
+// Clear alarms
+function clearAlarms() {
+    alarmConfig.guilds = [];
+    alarmConfig.enabled = false;
+    alarmConfig.snoozedUntil = null;
+    guildExpTracking.clear();
+    
+    const alarmGuildSelect = document.getElementById('alarmGuilds');
+    if (alarmGuildSelect) {
+        Array.from(alarmGuildSelect.options).forEach(option => {
+            option.selected = false;
+        });
+    }
+    localStorage.removeItem('expAlarmConfig');
+    
+    updateAlarmStatus();
+    showNotification('🗑️ Alarms cleared', 'info');
+}
+
+// Update alarm status indicator
+function updateAlarmStatus() {
+    const statusDiv = document.getElementById('alarmStatus');
+    const indicator = statusDiv.querySelector('.alarm-indicator');
+    const text = statusDiv.querySelector('span:last-child');
+    
+    if (alarmConfig.enabled && alarmConfig.guilds.length > 0) {
+        indicator.className = 'alarm-indicator active';
+        text.textContent = `Alarm: Active (${alarmConfig.guilds.length} guild${alarmConfig.guilds.length > 1 ? 's' : ''})`;
+    } else {
+        indicator.className = 'alarm-indicator inactive';
+        text.textContent = 'Alarm: Inactive';
+    }
+}
+
+// Test alarm (visual and sound)
+function testAlarm() {
+    triggerAlarm('Test Guild', 1234567, 2, true);
+}
+
+// Check if any monitored guild exceeded threshold
+function checkGuildAlarms(delta) {
+    if (!alarmConfig.enabled || alarmConfig.guilds.length === 0) {
+        return;
+    }
+    
+    // Check if snoozed
+    if (alarmConfig.snoozedUntil && Date.now() < alarmConfig.snoozedUntil) {
+        return;
+    }
+    
+    // Check if this delta has guild info and matches monitored guilds
+    const deltaGuild = delta.guild || '';
+    let matchedGuild = null;
+    
+    for (const guild of alarmConfig.guilds) {
+        if (deltaGuild === guild) {
+            matchedGuild = guild;
+            break;
+        }
+    }
+    
+    if (!matchedGuild) {
+        return; // Guild not in monitored list
+    }
+    
+    // Track deltas for this guild (keep only last N scrapes)
+    if (!guildExpTracking.has(matchedGuild)) {
+        guildExpTracking.set(matchedGuild, []);
+    }
+    
+    const guildData = guildExpTracking.get(matchedGuild);
+    
+    // Add this delta
+    guildData.push({
+        exp: delta.deltaexp,
+        timestamp: Date.now(),
+        player: delta.name,
+        updateTime: delta.update_time
+    });
+    
+    // Keep only the last scrapeCount scrapes (based on unique update times)
+    const uniqueUpdateTimes = [...new Set(guildData.map(d => d.updateTime))].sort().reverse();
+    const recentUpdateTimes = uniqueUpdateTimes.slice(0, alarmConfig.scrapeCount);
+    const filtered = guildData.filter(d => recentUpdateTimes.includes(d.updateTime));
+    guildExpTracking.set(matchedGuild, filtered);
+    
+    // Calculate total exp in the last N scrapes
+    const totalExp = filtered.reduce((sum, entry) => sum + entry.exp, 0);
+    
+    // Check if threshold exceeded
+    if (totalExp >= alarmConfig.threshold) {
+        triggerAlarm(matchedGuild, totalExp, alarmConfig.scrapeCount, false);
+        // Clear tracking to avoid repeated alarms
+        guildExpTracking.set(matchedGuild, []);
+    }
+    // Clear tracking to avoid repeated alarms
+    guildExpTracking.set(matchedGuild, []);
+}
+
+// Trigger the alarm popup
+function triggerAlarm(guildName, totalExp, scrapeCount, isTest) {
+    const popup = document.getElementById('alarmPopup');
+    const message = document.getElementById('alarmMessage');
+    const details = document.getElementById('alarmDetails');
+    
+    const expFormatted = totalExp.toLocaleString();
+    const thresholdFormatted = alarmConfig.threshold.toLocaleString();
+    
+    if (isTest) {
+        message.textContent = `🧪 TEST ALARM`;
+        details.innerHTML = `
+            <p><strong>Guild:</strong> ${guildName}</p>
+            <p><strong>EXP Gained:</strong> ${expFormatted}</p>
+            <p><strong>Scrape Window:</strong> Last ${scrapeCount} scrape${scrapeCount > 1 ? 's' : ''}</p>
+            <p><em>This is a test alarm.</em></p>
+        `;
+    } else {
+        message.textContent = `Guild "${guildName}" exceeded threshold!`;
+        details.innerHTML = `
+            <p><strong>Guild:</strong> ${guildName}</p>
+            <p><strong>EXP Gained:</strong> ${expFormatted}</p>
+            <p><strong>Threshold:</strong> ${thresholdFormatted}</p>
+            <p><strong>Scrape Window:</strong> Last ${scrapeCount} scrape${scrapeCount > 1 ? 's' : ''}</p>
+            <p class="alarm-warning">⚠️ ${((totalExp / alarmConfig.threshold) * 100).toFixed(1)}% of threshold</p>
+        `;
+    }
+    
+    // Show popup with animation
+    popup.style.display = 'flex';
+    setTimeout(() => {
+        popup.classList.add('show');
+    }, 10);
+    
+    // Play alarm sound
+    if (alarmAudio) {
+        alarmAudio.play();
+    }
+    
+    // Flash the page title
+    flashPageTitle(guildName);
+}
+
+// Flash page title to get attention
+let titleFlashInterval = null;
+function flashPageTitle(guildName) {
+    if (titleFlashInterval) {
+        clearInterval(titleFlashInterval);
+    }
+    
+    const originalTitle = document.title;
+    let isAlert = false;
+    let flashCount = 0;
+    
+    titleFlashInterval = setInterval(() => {
+        document.title = isAlert ? originalTitle : `🚨 ALERT: ${guildName}!`;
+        isAlert = !isAlert;
+        flashCount++;
+        
+        if (flashCount >= 20) { // Flash for 10 seconds
+            clearInterval(titleFlashInterval);
+            document.title = originalTitle;
+            titleFlashInterval = null;
+        }
+    }, 500);
+}
+
+// Dismiss alarm
+function dismissAlarm() {
+    const popup = document.getElementById('alarmPopup');
+    popup.classList.remove('show');
+    
+    setTimeout(() => {
+        popup.style.display = 'none';
+    }, 300);
+    
+    if (titleFlashInterval) {
+        clearInterval(titleFlashInterval);
+        document.title = 'XAD - XISNOVE Analytics Dashboard';
+        titleFlashInterval = null;
+    }
+}
+
+// Snooze alarm for 5 minutes
+function snoozeAlarm() {
+    alarmConfig.snoozedUntil = Date.now() + (5 * 60 * 1000);
+    dismissAlarm();
+    showNotification('😴 Alarm snoozed for 5 minutes', 'info');
 }
