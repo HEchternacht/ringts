@@ -18,6 +18,7 @@ let alarmConfig = {
     snoozedUntil: null
 };
 let guildExpTracking = new Map(); // Track exp per guild (stores array of recent deltas)
+let processedUpdateTimes = new Set(); // Track which update_time values have been processed to avoid re-triggering
 let alarmAudio = null;
 let availableGuilds = []; // Available guilds from config
 
@@ -2600,7 +2601,7 @@ function updateAlarmStatus() {
 
 // Test alarm (visual and sound)
 function testAlarm() {
-    triggerAlarm('Test Player', 'Test Guild', 1234567, 2, true);
+    triggerAlarm('Test Player', 'Test Guild', 1234567, 1000000, 2, true);
 }
 
 // Check if any monitored guild exceeded threshold
@@ -2612,6 +2613,19 @@ function checkGuildAlarms(delta) {
     // Check if snoozed
     if (alarmConfig.snoozedUntil && Date.now() < alarmConfig.snoozedUntil) {
         return;
+    }
+    
+    // Only trigger on new data - check if we've already processed this update_time
+    const updateTimeKey = `${delta.update_time}_${delta.name}`;
+    if (processedUpdateTimes.has(updateTimeKey)) {
+        return; // Already processed this data point
+    }
+    processedUpdateTimes.add(updateTimeKey);
+    
+    // Limit the size of processedUpdateTimes to prevent memory leaks (keep last 10000)
+    if (processedUpdateTimes.size > 10000) {
+        const keysArray = Array.from(processedUpdateTimes);
+        processedUpdateTimes = new Set(keysArray.slice(-5000));
     }
     
     // Check if this delta has guild info and matches monitored guilds
@@ -2650,38 +2664,69 @@ function checkGuildAlarms(delta) {
     const filtered = guildData.filter(d => recentUpdateTimes.includes(d.updateTime));
     guildExpTracking.set(matchedGuild, filtered);
     
-    // Calculate total exp in the last N scrapes and track which players contributed
-    const playerExpMap = new Map();
+    // Only check if we have enough scrapes
+    if (uniqueUpdateTimes.length < alarmConfig.scrapeCount) {
+        return; // Not enough scrapes yet
+    }
+    
+    // Group by player and check if EACH scrape exceeded threshold (not sum)
+    const playersByScrape = new Map();
+    
     filtered.forEach(entry => {
-        const currentExp = playerExpMap.get(entry.player) || 0;
-        playerExpMap.set(entry.player, currentExp + entry.exp);
+        if (!playersByScrape.has(entry.player)) {
+            playersByScrape.set(entry.player, new Map());
+        }
+        const playerScrapes = playersByScrape.get(entry.player);
+        
+        // Track exp per update_time (scrape)
+        if (!playerScrapes.has(entry.updateTime)) {
+            playerScrapes.set(entry.updateTime, 0);
+        }
+        playerScrapes.set(entry.updateTime, playerScrapes.get(entry.updateTime) + entry.exp);
     });
     
-    // Find players who exceeded threshold individually
-    const playersExceedingThreshold = [];
-    playerExpMap.forEach((exp, player) => {
-        if (exp >= alarmConfig.threshold) {
-            playersExceedingThreshold.push({ player, exp });
+    // Find players where EXP was above threshold in EACH of the last N scrapes
+    const playersConsistentlyAboveThreshold = [];
+    
+    playersByScrape.forEach((scrapeMap, player) => {
+        // Check if player has data for all required scrapes
+        const playerUpdateTimes = Array.from(scrapeMap.keys());
+        const hasAllScrapes = recentUpdateTimes.every(ut => playerUpdateTimes.includes(ut));
+        
+        if (!hasAllScrapes) {
+            return; // Player doesn't have data for all scrapes
+        }
+        
+        // Check if EVERY scrape exceeded threshold
+        const allScrapesAboveThreshold = recentUpdateTimes.every(ut => {
+            return scrapeMap.get(ut) >= alarmConfig.threshold;
+        });
+        
+        if (allScrapesAboveThreshold) {
+            // Calculate average exp across scrapes
+            const totalExp = Array.from(scrapeMap.values()).reduce((sum, exp) => sum + exp, 0);
+            const avgExp = totalExp / scrapeMap.size;
+            playersConsistentlyAboveThreshold.push({ player, avgExp, scrapeMap });
         }
     });
     
-    // Trigger alarm for each player who exceeded threshold
-    if (playersExceedingThreshold.length > 0) {
-        playersExceedingThreshold.forEach(({ player, exp }) => {
-            triggerAlarm(player, matchedGuild, exp, alarmConfig.scrapeCount, false);
+    // Trigger alarm for each player who was consistently above threshold
+    if (playersConsistentlyAboveThreshold.length > 0) {
+        playersConsistentlyAboveThreshold.forEach(({ player, avgExp, scrapeMap }) => {
+            const minExp = Math.min(...Array.from(scrapeMap.values()));
+            triggerAlarm(player, matchedGuild, avgExp, minExp, alarmConfig.scrapeCount, false);
         });
-        // Clear tracking to avoid repeated alarms
-        guildExpTracking.set(matchedGuild, []);
     }
 }
 
 // Trigger the alarm popup
-function triggerAlarm(playerName, guildName, totalExp, scrapeCount, isTest) {
+function triggerAlarm(playerName, guildName, avgExp, minExp, scrapeCount, isTest) {
     const popup = document.getElementById('alarmPopup');
     const message = document.getElementById('alarmMessage');
     const details = document.getElementById('alarmDetails');
     
-    const expFormatted = totalExp.toLocaleString();
+    const avgExpFormatted = avgExp.toLocaleString();
+    const minExpFormatted = minExp.toLocaleString();
     const thresholdFormatted = alarmConfig.threshold.toLocaleString();
     
     if (isTest) {
@@ -2689,19 +2734,21 @@ function triggerAlarm(playerName, guildName, totalExp, scrapeCount, isTest) {
         details.innerHTML = `
             <p><strong>Player:</strong> ${playerName}</p>
             <p><strong>Guild:</strong> ${guildName}</p>
-            <p><strong>EXP Gained:</strong> ${expFormatted}</p>
+            <p><strong>Avg EXP/Scrape:</strong> ${avgExpFormatted}</p>
+            <p><strong>Min EXP/Scrape:</strong> ${minExpFormatted}</p>
             <p><strong>Scrape Window:</strong> Last ${scrapeCount} scrape${scrapeCount > 1 ? 's' : ''}</p>
             <p><em>This is a test alarm.</em></p>
         `;
     } else {
-        message.textContent = `Player "${playerName}" exceeded threshold!`;
+        message.textContent = `Player "${playerName}" consistently above threshold!`;
         details.innerHTML = `
             <p><strong>Player:</strong> ${playerName}</p>
             <p><strong>Guild:</strong> ${guildName}</p>
-            <p><strong>EXP Gained:</strong> ${expFormatted}</p>
+            <p><strong>Avg EXP/Scrape:</strong> ${avgExpFormatted}</p>
+            <p><strong>Min EXP/Scrape:</strong> ${minExpFormatted}</p>
             <p><strong>Threshold:</strong> ${thresholdFormatted}</p>
             <p><strong>Scrape Window:</strong> Last ${scrapeCount} scrape${scrapeCount > 1 ? 's' : ''}</p>
-            <p class="alarm-warning">⚠️ ${((totalExp / alarmConfig.threshold) * 100).toFixed(1)}% of threshold</p>
+            <p class="alarm-warning">⚠️ Player exceeded threshold in ALL ${scrapeCount} scrapes!</p>
         `;
     }
     
