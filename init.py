@@ -12,42 +12,65 @@ def run_uvicorn_with_monitor():
     Run fastapi_app.py with uvicorn and monitor memory usage via /memusage endpoint. Restart if usage > 450MB.
     """
     while True:
+        uvicorn_pid = None
         # Start the server process in a new terminal on Linux, normal on Windows
         if sys.platform.startswith('linux'):
-            # Try common terminal emulators
+            ###############################################################################################################
+            # Try common terminal emulators, keep terminal open after process exits
+            uvicorn_cmd_str = f"{sys.executable} -m uvicorn fastapi_app:app --host 0.0.0.0 --port {PORT} --log-level info"
             terminal_cmds = [
-                ['x-terminal-emulator', '-e'],
-                ['gnome-terminal', '--'],
-                ['konsole', '-e'],
-                ['xterm', '-e']
+                ['x-terminal-emulator', '-e', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"],
+                ['gnome-terminal', '--', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"],
+                ['konsole', '-e', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"],
+                ['xterm', '-e', 'bash', '-c', f"{uvicorn_cmd_str}; exec bash"]
             ]
-            uvicorn_cmd = [sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
-                          '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info']
             for term in terminal_cmds:
                 try:
-                    process = subprocess.Popen(term + uvicorn_cmd)
-                    print(f"[INIT] Started uvicorn server in new terminal (PID: {process.pid})")
+                    process = subprocess.Popen(term)
+                    print(f"[INIT] Started uvicorn server in new terminal (Terminal PID: {process.pid})")
+                    # Wait a bit for uvicorn to start, then find its PID
+                    time.sleep(3)
+                    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                        try:
+                            cmdline = proc.info['cmdline']
+                            if cmdline and 'uvicorn' in ' '.join(cmdline) and str(PORT) in ' '.join(cmdline):
+                                uvicorn_pid = proc.info['pid']
+                                print(f"[INIT] Tracked uvicorn process PID: {uvicorn_pid}")
+                                break
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
                     break
                 except FileNotFoundError:
                     continue
             else:
                 print("[INIT] No supported terminal emulator found. Starting in current process.")
-                process = subprocess.Popen(uvicorn_cmd)
+                process = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
+                                           '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info'])
+                uvicorn_pid = process.pid
         else:
             process = subprocess.Popen([
                 sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
                 '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info'
             ])
+            uvicorn_pid = process.pid
             print(f"[INIT] Started uvicorn server (PID: {process.pid})")
-        print(f"[INIT] Started uvicorn server (PID: {process.pid})")
+        print(f"[INIT] Monitoring uvicorn PID: {uvicorn_pid}")
+            ###############################################################################################################
+
         try:
             while True:
                 time.sleep(60)
                 health_failed = False
+                force_kill = False
                 # Check /healthz endpoint
+                ###############################################################################################################
                 try:
                     health_resp = requests.get(f'http://127.0.0.1:{PORT}/healthz', timeout=10)
-                    if health_resp.status_code != 200:
+                    if health_resp.status_code == 500:
+                        print(f"[INIT] /healthz returned 500 - forcefully killing server...")
+                        health_failed = True
+                        force_kill = True
+                    elif health_resp.status_code != 200:
                         print(f"[INIT] /healthz returned status {health_resp.status_code}, restarting server...")
                         health_failed = True
                     else:
@@ -63,6 +86,20 @@ def run_uvicorn_with_monitor():
                     health_failed = True
 
                 if health_failed:
+                    if force_kill and sys.platform.startswith('linux') and uvicorn_pid:
+                        # Forcefully kill the tracked uvicorn process on Linux
+                        try:
+                            print(f"[INIT] Force killing uvicorn process {uvicorn_pid}")
+                            proc = psutil.Process(uvicorn_pid)
+                            proc.kill()  # SIGKILL
+                            proc.wait(timeout=5)
+                            print(f"[INIT] Successfully killed uvicorn process {uvicorn_pid}")
+                        except psutil.NoSuchProcess:
+                            print(f"[INIT] Process {uvicorn_pid} already terminated")
+                        except Exception as e:
+                            print(f"[INIT] Error killing process {uvicorn_pid}: {e}")
+                    
+                    # Also terminate the terminal process
                     process.terminate()
                     try:
                         process.wait(timeout=10)
@@ -71,6 +108,7 @@ def run_uvicorn_with_monitor():
                     if process.poll() is None:
                         process.kill()
                     break
+                        ###############################################################################################################
 
                 # Query the FastAPI /memusage endpoint for memory usage
                 try:
