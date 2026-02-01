@@ -2600,7 +2600,7 @@ function updateAlarmStatus() {
 
 // Test alarm (visual and sound)
 function testAlarm() {
-    triggerAlarm('Test Guild', 1234567, 2, true);
+    triggerAlarm('Test Player', 'Test Guild', 1234567, 2, true);
 }
 
 // Check if any monitored guild exceeded threshold
@@ -2650,21 +2650,33 @@ function checkGuildAlarms(delta) {
     const filtered = guildData.filter(d => recentUpdateTimes.includes(d.updateTime));
     guildExpTracking.set(matchedGuild, filtered);
     
-    // Calculate total exp in the last N scrapes
-    const totalExp = filtered.reduce((sum, entry) => sum + entry.exp, 0);
+    // Calculate total exp in the last N scrapes and track which players contributed
+    const playerExpMap = new Map();
+    filtered.forEach(entry => {
+        const currentExp = playerExpMap.get(entry.player) || 0;
+        playerExpMap.set(entry.player, currentExp + entry.exp);
+    });
     
-    // Check if threshold exceeded
-    if (totalExp >= alarmConfig.threshold) {
-        triggerAlarm(matchedGuild, totalExp, alarmConfig.scrapeCount, false);
+    // Find players who exceeded threshold individually
+    const playersExceedingThreshold = [];
+    playerExpMap.forEach((exp, player) => {
+        if (exp >= alarmConfig.threshold) {
+            playersExceedingThreshold.push({ player, exp });
+        }
+    });
+    
+    // Trigger alarm for each player who exceeded threshold
+    if (playersExceedingThreshold.length > 0) {
+        playersExceedingThreshold.forEach(({ player, exp }) => {
+            triggerAlarm(player, matchedGuild, exp, alarmConfig.scrapeCount, false);
+        });
         // Clear tracking to avoid repeated alarms
         guildExpTracking.set(matchedGuild, []);
     }
-    // Clear tracking to avoid repeated alarms
-    guildExpTracking.set(matchedGuild, []);
 }
 
 // Trigger the alarm popup
-function triggerAlarm(guildName, totalExp, scrapeCount, isTest) {
+function triggerAlarm(playerName, guildName, totalExp, scrapeCount, isTest) {
     const popup = document.getElementById('alarmPopup');
     const message = document.getElementById('alarmMessage');
     const details = document.getElementById('alarmDetails');
@@ -2675,14 +2687,16 @@ function triggerAlarm(guildName, totalExp, scrapeCount, isTest) {
     if (isTest) {
         message.textContent = `🧪 TEST ALARM`;
         details.innerHTML = `
+            <p><strong>Player:</strong> ${playerName}</p>
             <p><strong>Guild:</strong> ${guildName}</p>
             <p><strong>EXP Gained:</strong> ${expFormatted}</p>
             <p><strong>Scrape Window:</strong> Last ${scrapeCount} scrape${scrapeCount > 1 ? 's' : ''}</p>
             <p><em>This is a test alarm.</em></p>
         `;
     } else {
-        message.textContent = `Guild "${guildName}" exceeded threshold!`;
+        message.textContent = `Player "${playerName}" exceeded threshold!`;
         details.innerHTML = `
+            <p><strong>Player:</strong> ${playerName}</p>
             <p><strong>Guild:</strong> ${guildName}</p>
             <p><strong>EXP Gained:</strong> ${expFormatted}</p>
             <p><strong>Threshold:</strong> ${thresholdFormatted}</p>
