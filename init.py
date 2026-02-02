@@ -13,6 +13,7 @@ def run_uvicorn_with_monitor():
     """
     while True:
         uvicorn_pid = None
+        terminal_pid = None
         # Start the server process in a new terminal on Linux, normal on Windows
         if sys.platform.startswith('linux'):
             ###############################################################################################################
@@ -26,8 +27,9 @@ def run_uvicorn_with_monitor():
             ]
             for term in terminal_cmds:
                 try:
-                    process = subprocess.Popen(term)
-                    print(f"[INIT] Started uvicorn server in new terminal (Terminal PID: {process.pid})")
+                    terminal_process = subprocess.Popen(term)
+                    terminal_pid = terminal_process.pid
+                    print(f"[INIT] Started uvicorn server in new terminal (Terminal PID: {terminal_pid})")
                     # Wait a bit for uvicorn to start, then find its PID
                     time.sleep(3)
                     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -44,22 +46,36 @@ def run_uvicorn_with_monitor():
                     continue
             else:
                 print("[INIT] No supported terminal emulator found. Starting in current process.")
-                process = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
+                terminal_process = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
                                            '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info'])
-                uvicorn_pid = process.pid
+                uvicorn_pid = terminal_process.pid
+                terminal_pid = terminal_process.pid
         else:
-            process = subprocess.Popen([
+            terminal_process = subprocess.Popen([
                 sys.executable, '-m', 'uvicorn', 'fastapi_app:app',
                 '--host', '0.0.0.0', '--port', str(PORT), '--log-level', 'info'
             ])
-            uvicorn_pid = process.pid
-            print(f"[INIT] Started uvicorn server (PID: {process.pid})")
+            uvicorn_pid = terminal_process.pid
+            terminal_pid = terminal_process.pid
+            print(f"[INIT] Started uvicorn server (PID: {terminal_process.pid})")
         print(f"[INIT] Monitoring uvicorn PID: {uvicorn_pid}")
             ###############################################################################################################
 
         try:
             while True:
                 time.sleep(60)
+                
+                # Check if uvicorn process is still alive
+                if uvicorn_pid:
+                    try:
+                        uvicorn_proc = psutil.Process(uvicorn_pid)
+                        if not uvicorn_proc.is_running():
+                            print(f"[INIT] Uvicorn process {uvicorn_pid} died, restarting...")
+                            break
+                    except psutil.NoSuchProcess:
+                        print(f"[INIT] Uvicorn process {uvicorn_pid} no longer exists, restarting...")
+                        break
+                
                 health_failed = False
                 force_kill = False
                 # Check /healthz endpoint
@@ -86,25 +102,35 @@ def run_uvicorn_with_monitor():
                     health_failed = True
 
                 if health_failed:
-                    if force_kill and sys.platform.startswith('linux') and uvicorn_pid:
-                        # Forcefully kill the tracked uvicorn process on Linux
+                    # Kill the uvicorn process
+                    if uvicorn_pid:
                         try:
-                            print(f"[INIT] Force killing uvicorn process {uvicorn_pid}")
+                            print(f"[INIT] {'Force ' if force_kill else ''}Killing uvicorn process {uvicorn_pid}")
                             proc = psutil.Process(uvicorn_pid)
-                            proc.kill()  # SIGKILL
+                            if force_kill:
+                                proc.kill()  # SIGKILL
+                            else:
+                                proc.terminate()  # SIGTERM
                             proc.wait(timeout=5)
                             print(f"[INIT] Successfully killed uvicorn process {uvicorn_pid}")
                         except psutil.NoSuchProcess:
                             print(f"[INIT] Process {uvicorn_pid} already terminated")
+                        except psutil.TimeoutExpired:
+                            print(f"[INIT] Process {uvicorn_pid} didn't terminate, force killing...")
+                            proc.kill()
+                            proc.wait(timeout=5)
                         except Exception as e:
                             print(f"[INIT] Error killing process {uvicorn_pid}: {e}")
                     
-                    # Also terminate the terminal process
-                    process.terminate()
-                    try:
-                        process.wait(timeout=10)
-                    except Exception:
-                        pass
+                    # Also terminate the terminal process if different
+                    if terminal_pid and terminal_pid != uvicorn_pid:
+                        try:
+                            terminal_proc = psutil.Process(terminal_pid)
+                            terminal_proc.terminate()
+                            terminal_proc.wait(timeout=5)
+                        except Exception:
+                            pass
+                    break
          
                         ###############################################################################################################
 
@@ -117,13 +143,26 @@ def run_uvicorn_with_monitor():
                         print(f"[INIT] Server memory usage (via /memusage): {mem_mb:.1f} MB")
                         if mem_mb > 450:
                             print("[INIT] Memory usage exceeded 450MB, restarting server...")
-                            process.terminate()
-                            try:
-                                process.wait(timeout=10)
-                            except Exception:
-                                pass
-                            if process.poll() is None:
-                                process.kill()
+                            # Kill the uvicorn process
+                            if uvicorn_pid:
+                                try:
+                                    proc = psutil.Process(uvicorn_pid)
+                                    proc.terminate()
+                                    proc.wait(timeout=10)
+                                    if proc.is_running():
+                                        proc.kill()
+                                except psutil.NoSuchProcess:
+                                    pass
+                                except Exception as e:
+                                    print(f"[INIT] Error terminating process: {e}")
+                            
+                            # Also terminate terminal if different
+                            if terminal_pid and terminal_pid != uvicorn_pid:
+                                try:
+                                    terminal_proc = psutil.Process(terminal_pid)
+                                    terminal_proc.terminate()
+                                except Exception:
+                                    pass
                             break
                     else:
                         print(f"[INIT] /memusage endpoint returned status {resp.status_code}")
@@ -131,17 +170,27 @@ def run_uvicorn_with_monitor():
                     print(f"[INIT] Error querying /memusage: {e}")
                 except Exception as e:
                     print(f"[INIT] Unexpected error: {e}")
-                # Also check if process is still alive
           
         except Exception as e:
             print(f"[INIT] Monitor error: {e}")
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except Exception:
-                pass
-            if process.poll() is None:
-                process.kill()
+            # Kill uvicorn process on error
+            if uvicorn_pid:
+                try:
+                    proc = psutil.Process(uvicorn_pid)
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                    if proc.is_running():
+                        proc.kill()
+                except Exception:
+                    pass
+            
+            # Kill terminal if different
+            if terminal_pid and terminal_pid != uvicorn_pid:
+                try:
+                    terminal_proc = psutil.Process(terminal_pid)
+                    terminal_proc.terminate()
+                except Exception:
+                    pass
         time.sleep(2)  # Short delay before restart
 
 if __name__ == "__main__":
